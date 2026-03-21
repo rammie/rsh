@@ -1,0 +1,114 @@
+mod allowlist;
+mod ast;
+mod executor;
+mod glob;
+mod parser;
+
+use executor::{Executor, Output};
+
+fn print_json(output: &Output) {
+    println!("{}", serde_json::to_string_pretty(output).unwrap());
+}
+
+fn usage() {
+    eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --allow <cmds>      Comma-separated allowlist (overrides defaults)");
+    eprintln!("  --allow-absolute    Allow absolute paths in globs and redirects");
+    eprintln!("  --allow-redirects   Allow output redirects (> and >>)");
+    eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
+    eprintln!("  --dir <path>        Working directory (default: cwd)");
+    eprintln!("  --help              Show this help");
+    std::process::exit(2);
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    let mut allow_flag: Option<String> = None;
+    let mut allow_absolute = false;
+    let mut allow_redirects = false;
+    let mut max_output: usize = 10 * 1024 * 1024; // 10MB
+    let mut working_dir: Option<String> = None;
+    let mut command_string: Option<String> = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => usage(),
+            "--allow" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --allow requires a value");
+                    std::process::exit(2);
+                }
+                allow_flag = Some(args[i].clone());
+            }
+            "--allow-absolute" => {
+                allow_absolute = true;
+            }
+            "--allow-redirects" => {
+                allow_redirects = true;
+            }
+            "--max-output" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --max-output requires a value");
+                    std::process::exit(2);
+                }
+                max_output = args[i].parse().unwrap_or_else(|_| {
+                    eprintln!("error: --max-output must be a positive integer");
+                    std::process::exit(2);
+                });
+            }
+            "--dir" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --dir requires a value");
+                    std::process::exit(2);
+                }
+                working_dir = Some(args[i].clone());
+            }
+            _ => {
+                if args[i].starts_with('-') {
+                    eprintln!("error: unknown flag '{}'", args[i]);
+                    std::process::exit(2);
+                }
+                command_string = Some(args[i].clone());
+            }
+        }
+        i += 1;
+    }
+
+    let command_string = match command_string {
+        Some(s) => s,
+        None => {
+            eprintln!("error: no command string provided");
+            usage();
+            unreachable!()
+        }
+    };
+
+    let working_dir = match working_dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+
+    // Parse
+    let program = match parser::parse(&command_string) {
+        Ok(p) => p,
+        Err(e) => {
+            print_json(&Output::error(e.to_string()));
+            std::process::exit(1);
+        }
+    };
+
+    // Execute
+    let al = allowlist::Allowlist::load(allow_flag.as_deref());
+    let executor = Executor::new(al, working_dir, allow_absolute, allow_redirects, max_output);
+    let output = executor.execute(&program);
+    let exit_code = output.exit_code;
+    print_json(&output);
+    std::process::exit(exit_code);
+}
