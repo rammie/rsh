@@ -110,6 +110,14 @@ impl Output {
     }
 }
 
+/// Arguments that allow commands to execute arbitrary sub-commands or perform
+/// destructive actions, bypassing all rsh restrictions. Keyed by command name.
+const DANGEROUS_ARGS: &[(&str, &[&str])] = &[
+    ("find", &["-exec", "-execdir", "-ok", "-okdir", "-delete"]),
+    ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
+    ("xargs", &[]),  // xargs itself is the danger — always runs sub-commands
+];
+
 /// Approved environment variables that can be referenced.
 const APPROVED_VARS: &[&str] = &[
     "HOME", "USER", "PATH", "PWD", "LANG", "TERM",
@@ -176,6 +184,30 @@ impl Executor {
                         cmd.name,
                         self.allowlist.allowed_commands().join(", ")
                     ));
+                }
+                // Check for dangerous sub-command arguments
+                for (dangerous_cmd, dangerous_flags) in DANGEROUS_ARGS {
+                    if cmd.name == *dangerous_cmd {
+                        // If the flag list is empty, the command itself is always dangerous
+                        if dangerous_flags.is_empty() {
+                            return Err(format!(
+                                "'{}' executes arbitrary commands and is not allowed",
+                                cmd.name
+                            ));
+                        }
+                        for arg in &cmd.args {
+                            let val = match arg {
+                                Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s.as_str(),
+                                Arg::Var(_) => continue,
+                            };
+                            if dangerous_flags.contains(&val) {
+                                return Err(format!(
+                                    "'{}' flag on '{}' executes arbitrary commands and is not allowed",
+                                    val, cmd.name
+                                ));
+                            }
+                        }
+                    }
                 }
                 // Validate redirects are allowed
                 if !cmd.redirects.is_empty() && !self.allow_redirects {

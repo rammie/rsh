@@ -403,3 +403,71 @@ fn test_redirect_on_non_final_pipeline_rejected() {
     let err = json["error"].as_str().unwrap();
     assert!(err.contains("non-final pipeline command"), "error was: {}", err);
 }
+
+// --- Dangerous sub-command arguments ---
+
+#[test]
+fn test_find_exec_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -name '*.rs' -exec wc -l {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("-exec"), "error was: {}", err);
+    assert!(err.contains("not allowed"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_execdir_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -execdir echo {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("-execdir"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_delete_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -name '*.tmp' -delete")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("-delete"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_without_exec_allowed() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("find src -name '*.rs' -type f")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert_eq!(json["exit_code"], 0);
+}
+
+#[test]
+fn test_xargs_always_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs")
+        .arg("--inherit-env")
+        .arg("echo hello | xargs echo")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("xargs"), "error was: {}", err);
+    assert!(err.contains("not allowed"), "error was: {}", err);
+}
