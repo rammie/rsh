@@ -110,13 +110,20 @@ impl Output {
     }
 }
 
-/// Arguments that allow commands to execute arbitrary sub-commands or perform
-/// destructive actions, bypassing all rsh restrictions. Keyed by command name.
-const DANGEROUS_ARGS: &[(&str, &[&str])] = &[
-    ("find", &["-exec", "-execdir", "-ok", "-okdir", "-delete"]),
-    ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
-    ("xargs", &[]),  // xargs itself is the danger — always runs sub-commands
+/// Flags that are always forbidden on specific commands (destructive or interactive).
+const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
+    ("find", &["-delete", "-ok", "-okdir"]),
 ];
+
+/// Flags that trigger sub-command execution on specific commands.
+/// The token immediately after the flag is the sub-command name and must be in the allowlist.
+const EXEC_FLAGS: &[(&str, &[&str])] = &[
+    ("find", &["-exec", "-execdir"]),
+    ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
+];
+
+/// Commands that always execute sub-commands and cannot be made safe.
+const ALWAYS_BLOCKED_COMMANDS: &[&str] = &["xargs"];
 
 /// Approved environment variables that can be referenced.
 const APPROVED_VARS: &[&str] = &[
@@ -171,6 +178,80 @@ impl Executor {
         }
     }
 
+    /// Validate -exec/-execdir style flags: the sub-command must be in the allowlist,
+    /// and its arguments must not contain path traversal.
+    fn validate_exec_flags(&self, cmd: &ast::Command) -> Result<(), String> {
+        let exec_flags: &[&str] = match EXEC_FLAGS.iter().find(|(c, _)| *c == cmd.name) {
+            Some((_, flags)) => flags,
+            None => return Ok(()), // not a command with exec flags
+        };
+
+        let args: Vec<&str> = cmd.args.iter().filter_map(|a| match a {
+            Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => Some(s.as_str()),
+            Arg::Var(_) => None,
+        }).collect();
+
+        let mut i = 0;
+        while i < args.len() {
+            if exec_flags.contains(&args[i]) {
+                let flag = args[i];
+                i += 1;
+
+                // Next token is the sub-command name
+                if i >= args.len() {
+                    return Err(format!(
+                        "'{}' on '{}' requires a command argument",
+                        flag, cmd.name
+                    ));
+                }
+
+                let sub_cmd = args[i];
+
+                // Sub-command must not contain paths
+                if sub_cmd.contains('/') || sub_cmd.contains('\\') || sub_cmd.starts_with('.') {
+                    return Err(format!(
+                        "sub-command '{}' in '{} {}' must be a bare command name, not a path",
+                        sub_cmd, cmd.name, flag
+                    ));
+                }
+
+                // Sub-command must be in the allowlist
+                if !self.allowlist.is_allowed(sub_cmd) {
+                    return Err(format!(
+                        "sub-command '{}' in '{} {}' not in allowlist (allowed: {})",
+                        sub_cmd, cmd.name, flag,
+                        self.allowlist.allowed_commands().join(", ")
+                    ));
+                }
+
+                // Scan the sub-command's arguments (up to ';' or '+') for path traversal
+                i += 1;
+                while i < args.len() {
+                    let sub_arg = args[i];
+                    if sub_arg == ";" || sub_arg == "+" || sub_arg == "{}" {
+                        break;
+                    }
+                    if sub_arg.split('/').any(|seg| seg == "..") {
+                        return Err(format!(
+                            "path traversal ('..') in '{}' sub-command argument '{}' not allowed",
+                            flag, sub_arg
+                        ));
+                    }
+                    if sub_arg.starts_with('/') && !self.allow_absolute {
+                        return Err(format!(
+                            "absolute path '{}' in '{}' sub-command not allowed (use --allow-absolute)",
+                            sub_arg, flag
+                        ));
+                    }
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+
+        Ok(())
+    }
+
     /// Validate the program before execution. Returns all command names and any error.
     fn validate(&self, program: &Program) -> Result<Vec<String>, String> {
         let mut command_names = Vec::new();
@@ -185,30 +266,36 @@ impl Executor {
                         self.allowlist.allowed_commands().join(", ")
                     ));
                 }
-                // Check for dangerous sub-command arguments
-                for (dangerous_cmd, dangerous_flags) in DANGEROUS_ARGS {
-                    if cmd.name == *dangerous_cmd {
-                        // If the flag list is empty, the command itself is always dangerous
-                        if dangerous_flags.is_empty() {
-                            return Err(format!(
-                                "'{}' executes arbitrary commands and is not allowed",
-                                cmd.name
-                            ));
-                        }
+                // Block commands that always execute sub-commands
+                if ALWAYS_BLOCKED_COMMANDS.contains(&cmd.name.as_str()) {
+                    return Err(format!(
+                        "'{}' executes arbitrary commands and is not allowed",
+                        cmd.name
+                    ));
+                }
+
+                // Check for unconditionally blocked flags (destructive/interactive)
+                for (blocked_cmd, blocked_flags) in UNCONDITIONALLY_BLOCKED {
+                    if cmd.name == *blocked_cmd {
                         for arg in &cmd.args {
                             let val = match arg {
                                 Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s.as_str(),
                                 Arg::Var(_) => continue,
                             };
-                            if dangerous_flags.contains(&val) {
+                            if blocked_flags.contains(&val) {
                                 return Err(format!(
-                                    "'{}' flag on '{}' executes arbitrary commands and is not allowed",
+                                    "'{}' flag on '{}' is not allowed",
                                     val, cmd.name
                                 ));
                             }
                         }
                     }
                 }
+
+                // Validate sub-command execution flags (-exec, --exec, etc.)
+                // The token after the flag is the sub-command name — check it
+                // against the allowlist.
+                self.validate_exec_flags(cmd)?;
                 // Validate redirects are allowed
                 if !cmd.redirects.is_empty() && !self.allow_redirects {
                     return Err(

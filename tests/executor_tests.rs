@@ -404,31 +404,89 @@ fn test_redirect_on_non_final_pipeline_rejected() {
     assert!(err.contains("non-final pipeline command"), "error was: {}", err);
 }
 
-// --- Dangerous sub-command arguments ---
+// --- Dangerous sub-command arguments / -exec validation ---
 
 #[test]
-fn test_find_exec_blocked() {
+fn test_find_exec_with_allowlisted_command() {
+    // find -exec grep is safe — grep is in the allowlist
     let output = rsh_bin()
         .arg("--inherit-env")
-        .arg("find . -name '*.rs' -exec wc -l {} ';'")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("find src -name '*.rs' -exec grep -l 'fn main' {} ';'")
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("-exec"), "error was: {}", err);
-    assert!(err.contains("not allowed"), "error was: {}", err);
+    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert!(json["stdout"].as_str().unwrap().contains("main.rs"));
 }
 
 #[test]
-fn test_find_execdir_blocked() {
+fn test_find_exec_with_plus_terminator() {
+    // find -exec cmd {} + (batch mode) should also work
     let output = rsh_bin()
         .arg("--inherit-env")
-        .arg("find . -execdir echo {} ';'")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("find src -name '*.rs' -exec wc -l {} +")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert!(json["stdout"].as_str().unwrap().contains("total"));
+}
+
+#[test]
+fn test_find_exec_with_non_allowlisted_command_blocked() {
+    // find -exec rm should be rejected — rm is not in the allowlist
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -name '*.rs' -exec rm {} ';'")
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let err = json["error"].as_str().unwrap();
-    assert!(err.contains("-execdir"), "error was: {}", err);
+    assert!(err.contains("rm"), "error was: {}", err);
+    assert!(err.contains("not in allowlist"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_exec_with_path_command_blocked() {
+    // find -exec /usr/bin/grep — sub-command must be a bare name
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -exec /usr/bin/grep foo {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("bare command name"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_execdir_with_allowlisted_command() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("find src -name '*.rs' -execdir echo {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {}", json["error"]);
+}
+
+#[test]
+fn test_find_execdir_with_non_allowlisted_command_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -execdir bash -c 'echo pwned' ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("bash"), "error was: {}", err);
+    assert!(err.contains("not in allowlist"), "error was: {}", err);
 }
 
 #[test]
@@ -441,6 +499,18 @@ fn test_find_delete_blocked() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let err = json["error"].as_str().unwrap();
     assert!(err.contains("-delete"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_ok_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -ok rm {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("-ok"), "error was: {}", err);
 }
 
 #[test]
@@ -470,4 +540,17 @@ fn test_xargs_always_blocked() {
     let err = json["error"].as_str().unwrap();
     assert!(err.contains("xargs"), "error was: {}", err);
     assert!(err.contains("not allowed"), "error was: {}", err);
+}
+
+#[test]
+fn test_find_exec_subcmd_path_traversal_blocked() {
+    // The sub-command args should also be checked for path traversal
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -exec grep foo ../../etc/passwd {} ';'")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("path traversal"), "error was: {}", err);
 }
