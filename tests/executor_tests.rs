@@ -528,7 +528,8 @@ fn test_find_without_exec_allowed() {
 }
 
 #[test]
-fn test_xargs_always_blocked() {
+fn test_xargs_with_allowlisted_subcmd() {
+    // xargs echo is safe — echo is in the allowlist
     let output = rsh_bin()
         .arg("--allow")
         .arg("echo,xargs")
@@ -537,9 +538,98 @@ fn test_xargs_always_blocked() {
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
+    assert!(json["stdout"].as_str().unwrap().contains("hello"));
+}
+
+#[test]
+fn test_xargs_with_non_allowlisted_subcmd() {
+    // xargs rm should be rejected
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs")
+        .arg("--inherit-env")
+        .arg("echo foo | xargs rm")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let err = json["error"].as_str().unwrap();
-    assert!(err.contains("xargs"), "error was: {}", err);
+    assert!(err.contains("rm"), "error was: {}", err);
+    assert!(err.contains("not in allowlist"), "error was: {}", err);
+}
+
+#[test]
+fn test_xargs_with_path_subcmd_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs,grep")
+        .arg("--inherit-env")
+        .arg("echo foo | xargs /usr/bin/grep foo")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("bare command name"), "error was: {}", err);
+}
+
+#[test]
+fn test_xargs_interactive_flag_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs")
+        .arg("--inherit-env")
+        .arg("echo foo | xargs -p echo")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("-p"), "error was: {}", err);
     assert!(err.contains("not allowed"), "error was: {}", err);
+}
+
+#[test]
+fn test_xargs_with_flags_and_allowlisted_subcmd() {
+    // xargs -I {} grep -l {} should work with flags parsed correctly
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs,grep")
+        .arg("--inherit-env")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("echo Cargo.toml | xargs -I {} grep -l 'rsh' {}")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
+}
+
+#[test]
+fn test_xargs_no_subcmd_defaults_to_echo() {
+    // xargs with no command defaults to echo
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs")
+        .arg("--inherit-env")
+        .arg("echo hello | xargs")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
+    assert!(json["stdout"].as_str().unwrap().contains("hello"));
+}
+
+#[test]
+fn test_xargs_subcmd_path_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs,grep")
+        .arg("--inherit-env")
+        .arg("echo foo | xargs grep foo ../../etc/passwd")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("path traversal"), "error was: {}", err);
 }
 
 #[test]

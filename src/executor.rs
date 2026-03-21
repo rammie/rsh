@@ -122,8 +122,13 @@ const EXEC_FLAGS: &[(&str, &[&str])] = &[
     ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
 ];
 
-/// Commands that always execute sub-commands and cannot be made safe.
-const ALWAYS_BLOCKED_COMMANDS: &[&str] = &["xargs"];
+/// xargs flags that consume the next token as their value.
+const XARGS_FLAGS_WITH_ARG: &[&str] = &[
+    "-I", "-L", "-n", "-P", "-s", "-d", "-E", "-J", "-R",
+];
+
+/// xargs flags that are always blocked (interactive / dangerous).
+const XARGS_BLOCKED_FLAGS: &[&str] = &["-p", "--interactive"];
 
 /// Approved environment variables that can be referenced.
 const APPROVED_VARS: &[&str] = &[
@@ -178,26 +183,62 @@ impl Executor {
         }
     }
 
-    /// Validate -exec/-execdir style flags: the sub-command must be in the allowlist,
-    /// and its arguments must not contain path traversal.
+    /// Extract string values from command args, skipping variable references.
+    fn string_args(cmd: &ast::Command) -> Vec<&str> {
+        cmd.args.iter().filter_map(|a| match a {
+            Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => Some(s.as_str()),
+            Arg::Var(_) => None,
+        }).collect()
+    }
+
+    /// Check that a sub-command name is a bare allowlisted command.
+    fn check_sub_command(&self, sub_cmd: &str, context: &str) -> Result<(), String> {
+        if sub_cmd.contains('/') || sub_cmd.contains('\\') || sub_cmd.starts_with('.') {
+            return Err(format!(
+                "sub-command '{}' in '{}' must be a bare command name, not a path",
+                sub_cmd, context
+            ));
+        }
+        if !self.allowlist.is_allowed(sub_cmd) {
+            return Err(format!(
+                "sub-command '{}' in '{}' not in allowlist (allowed: {})",
+                sub_cmd, context, self.allowlist.allowed_commands().join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check a sub-command argument for path traversal and absolute paths.
+    fn check_sub_arg_path(&self, arg: &str, context: &str) -> Result<(), String> {
+        if arg.split('/').any(|seg| seg == "..") {
+            return Err(format!(
+                "path traversal ('..') in {} sub-command argument '{}' not allowed",
+                context, arg
+            ));
+        }
+        if arg.starts_with('/') && !self.allow_absolute {
+            return Err(format!(
+                "absolute path '{}' in {} sub-command not allowed (use --allow-absolute)",
+                arg, context
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate -exec/-execdir style flags: the sub-command must be in the allowlist.
     fn validate_exec_flags(&self, cmd: &ast::Command) -> Result<(), String> {
         let exec_flags: &[&str] = match EXEC_FLAGS.iter().find(|(c, _)| *c == cmd.name) {
             Some((_, flags)) => flags,
-            None => return Ok(()), // not a command with exec flags
+            None => return Ok(()),
         };
 
-        let args: Vec<&str> = cmd.args.iter().filter_map(|a| match a {
-            Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => Some(s.as_str()),
-            Arg::Var(_) => None,
-        }).collect();
-
+        let args = Self::string_args(cmd);
         let mut i = 0;
         while i < args.len() {
             if exec_flags.contains(&args[i]) {
                 let flag = args[i];
                 i += 1;
 
-                // Next token is the sub-command name
                 if i >= args.len() {
                     return Err(format!(
                         "'{}' on '{}' requires a command argument",
@@ -205,50 +246,78 @@ impl Executor {
                     ));
                 }
 
-                let sub_cmd = args[i];
+                let context = format!("{} {}", cmd.name, flag);
+                self.check_sub_command(args[i], &context)?;
 
-                // Sub-command must not contain paths
-                if sub_cmd.contains('/') || sub_cmd.contains('\\') || sub_cmd.starts_with('.') {
-                    return Err(format!(
-                        "sub-command '{}' in '{} {}' must be a bare command name, not a path",
-                        sub_cmd, cmd.name, flag
-                    ));
-                }
-
-                // Sub-command must be in the allowlist
-                if !self.allowlist.is_allowed(sub_cmd) {
-                    return Err(format!(
-                        "sub-command '{}' in '{} {}' not in allowlist (allowed: {})",
-                        sub_cmd, cmd.name, flag,
-                        self.allowlist.allowed_commands().join(", ")
-                    ));
-                }
-
-                // Scan the sub-command's arguments (up to ';' or '+') for path traversal
                 i += 1;
                 while i < args.len() {
-                    let sub_arg = args[i];
-                    if sub_arg == ";" || sub_arg == "+" || sub_arg == "{}" {
+                    if matches!(args[i], ";" | "+" | "{}") {
                         break;
                     }
-                    if sub_arg.split('/').any(|seg| seg == "..") {
-                        return Err(format!(
-                            "path traversal ('..') in '{}' sub-command argument '{}' not allowed",
-                            flag, sub_arg
-                        ));
-                    }
-                    if sub_arg.starts_with('/') && !self.allow_absolute {
-                        return Err(format!(
-                            "absolute path '{}' in '{}' sub-command not allowed (use --allow-absolute)",
-                            sub_arg, flag
-                        ));
-                    }
+                    self.check_sub_arg_path(args[i], &context)?;
                     i += 1;
                 }
             }
             i += 1;
         }
 
+        Ok(())
+    }
+
+    /// Validate xargs: the sub-command (first positional arg) must be in the allowlist.
+    fn validate_xargs(&self, cmd: &ast::Command) -> Result<(), String> {
+        if cmd.name != "xargs" {
+            return Ok(());
+        }
+
+        let args = Self::string_args(cmd);
+        let mut i = 0;
+
+        // Skip xargs flags to find the sub-command (first positional arg)
+        while i < args.len() {
+            let a = args[i];
+
+            if XARGS_BLOCKED_FLAGS.contains(&a) {
+                return Err(format!("'{}' flag on 'xargs' is not allowed", a));
+            }
+
+            if XARGS_FLAGS_WITH_ARG.contains(&a) {
+                i += 2;
+                continue;
+            }
+
+            // Short flags: combined like -I{} or clustered like -0rt
+            if a.starts_with('-') && a.len() > 1 && !a.starts_with("--") {
+                if XARGS_FLAGS_WITH_ARG.contains(&&a[0..2]) {
+                    i += 1; // value is part of the token (e.g., -I{})
+                    continue;
+                }
+                i += 1;
+                continue;
+            }
+
+            if a.starts_with("--") {
+                i += 1;
+                continue;
+            }
+
+            // First positional argument is the sub-command
+            self.check_sub_command(a, "xargs")?;
+
+            i += 1;
+            while i < args.len() {
+                self.check_sub_arg_path(args[i], "xargs")?;
+                i += 1;
+            }
+            return Ok(());
+        }
+
+        // No sub-command found — xargs defaults to echo
+        if !self.allowlist.is_allowed("echo") {
+            return Err(
+                "xargs with no sub-command defaults to 'echo', which is not in the allowlist".to_string()
+            );
+        }
         Ok(())
     }
 
@@ -266,28 +335,17 @@ impl Executor {
                         self.allowlist.allowed_commands().join(", ")
                     ));
                 }
-                // Block commands that always execute sub-commands
-                if ALWAYS_BLOCKED_COMMANDS.contains(&cmd.name.as_str()) {
-                    return Err(format!(
-                        "'{}' executes arbitrary commands and is not allowed",
-                        cmd.name
-                    ));
-                }
+                // Validate xargs sub-command against allowlist
+                self.validate_xargs(cmd)?;
 
                 // Check for unconditionally blocked flags (destructive/interactive)
-                for (blocked_cmd, blocked_flags) in UNCONDITIONALLY_BLOCKED {
-                    if cmd.name == *blocked_cmd {
-                        for arg in &cmd.args {
-                            let val = match arg {
-                                Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => s.as_str(),
-                                Arg::Var(_) => continue,
-                            };
-                            if blocked_flags.contains(&val) {
-                                return Err(format!(
-                                    "'{}' flag on '{}' is not allowed",
-                                    val, cmd.name
-                                ));
-                            }
+                if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd.name) {
+                    for val in Self::string_args(cmd) {
+                        if blocked_flags.contains(&val) {
+                            return Err(format!(
+                                "'{}' flag on '{}' is not allowed",
+                                val, cmd.name
+                            ));
                         }
                     }
                 }
