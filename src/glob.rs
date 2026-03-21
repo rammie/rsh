@@ -31,6 +31,14 @@ pub fn expand_glob(
         ));
     }
 
+    // Reject patterns with .. path traversal
+    if pattern.split('/').any(|seg| seg == "..") {
+        return Err(format!(
+            "glob pattern '{}' contains path traversal (..)",
+            pattern
+        ));
+    }
+
     let full_pattern = if is_absolute {
         PathBuf::from(pattern)
     } else {
@@ -42,10 +50,19 @@ pub fn expand_glob(
     let entries = glob::glob(pattern_str)
         .map_err(|e| format!("invalid glob pattern '{}': {}", pattern, e))?;
 
+    let canon_working = working_dir.canonicalize()
+        .map_err(|e| format!("cannot canonicalize working dir: {}", e))?;
+
     let mut results = Vec::new();
     for entry in entries {
         match entry {
             Ok(path) => {
+                // Verify the path stays within working_dir
+                if let Ok(canon_path) = path.canonicalize() {
+                    if !canon_path.starts_with(&canon_working) {
+                        continue; // skip paths outside working_dir
+                    }
+                }
                 // Convert back to relative path if the input was relative
                 let display_path = if is_absolute {
                     path.to_string_lossy().to_string()

@@ -241,3 +241,165 @@ fn test_append_redirect() {
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
+
+// --- S1: truncate on multi-byte chars ---
+#[test]
+fn test_max_output_multibyte_no_panic() {
+    // Use a very small --max-output to trigger truncation on multi-byte output
+    let output = rsh_bin()
+        .arg("--max-output")
+        .arg("5")
+        .arg("--inherit-env")
+        .arg(r#"echo "héllo wörld""#)
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Should not panic; output should be valid JSON with truncated: true
+    assert_eq!(json["truncated"], true);
+    // stdout should be valid UTF-8 (serde parsed it fine)
+    assert!(json["stdout"].is_string());
+}
+
+// --- S2: argument path traversal ---
+#[test]
+fn test_arg_path_traversal_rejected() {
+    let output = rsh_bin()
+        .arg("cat ../../etc/passwd")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("path traversal"), "error was: {}", err);
+}
+
+#[test]
+fn test_arg_absolute_path_rejected() {
+    let output = rsh_bin()
+        .arg("cat /etc/passwd")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("absolute path"), "error was: {}", err);
+}
+
+#[test]
+fn test_arg_relative_path_ok() {
+    // Accessing files within the working dir should work
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("--inherit-env")
+        .arg("cat src/main.rs")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+    assert!(json["stdout"].as_str().unwrap().contains("fn main"));
+}
+
+#[test]
+fn test_flags_not_rejected_as_paths() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("ls -la")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+}
+
+// --- S3: glob traversal ---
+#[test]
+fn test_glob_traversal_rejected() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("ls ../../*")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("path traversal"), "error was: {}", err);
+}
+
+// --- S4: double-quoted variable validation ---
+#[test]
+fn test_double_quoted_unapproved_var_rejected_at_validate() {
+    // This should fail BEFORE any command executes
+    let output = rsh_bin()
+        .arg(r#"echo "hello $SECRET_KEY""#)
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("not in approved list"), "error was: {}", err);
+    assert!(err.contains("SECRET_KEY"), "error was: {}", err);
+}
+
+// --- S5: execution timeout ---
+#[test]
+fn test_timeout() {
+    // Use a 1-second timeout with a command that would hang
+    let start = std::time::Instant::now();
+    let output = rsh_bin()
+        .arg("--timeout")
+        .arg("1")
+        .arg("--allow")
+        .arg("sleep")
+        .arg("--inherit-env")
+        .arg("sleep 60")
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("timed out"), "error was: {}", err);
+    assert!(elapsed.as_secs() < 10, "took too long: {:?}", elapsed);
+}
+
+// --- S6: environment sanitization ---
+#[test]
+fn test_env_sanitized_by_default() {
+    // Set a custom env var and verify the child can't see it
+    let output = rsh_bin()
+        .env("RSH_TEST_SECRET", "supersecret")
+        .arg("--allow")
+        .arg("env")
+        .arg("env")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+    let stdout = json["stdout"].as_str().unwrap();
+    assert!(!stdout.contains("RSH_TEST_SECRET"), "env leaked: {}", stdout);
+    assert!(!stdout.contains("supersecret"), "secret leaked: {}", stdout);
+}
+
+#[test]
+fn test_env_inherited_with_flag() {
+    let output = rsh_bin()
+        .env("RSH_TEST_VISIBLE", "yes")
+        .arg("--inherit-env")
+        .arg("--allow")
+        .arg("env")
+        .arg("env")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+    let stdout = json["stdout"].as_str().unwrap();
+    assert!(stdout.contains("RSH_TEST_VISIBLE"), "env not inherited: {}", stdout);
+}
+
+// --- S7: non-final pipeline redirect ---
+#[test]
+fn test_redirect_on_non_final_pipeline_rejected() {
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("echo hi > out.txt | head")
+        .output()
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let err = json["error"].as_str().unwrap();
+    assert!(err.contains("non-final pipeline command"), "error was: {}", err);
+}

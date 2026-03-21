@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::allowlist::Allowlist;
 use crate::ast::{self, Arg, Pipeline, Program, RedirectKind};
@@ -12,6 +13,77 @@ use crate::glob as rsh_glob;
 /// The result of executing a program.
 fn is_false(v: &bool) -> bool {
     !v
+}
+
+/// Extract variable names referenced in a double-quoted string ($VAR or ${VAR}).
+fn extract_var_names(s: &str) -> Vec<String> {
+    let mut vars = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            let mut name = String::new();
+            if chars.peek() == Some(&'{') {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    if c == '}' {
+                        chars.next();
+                        break;
+                    }
+                    name.push(c);
+                    chars.next();
+                }
+            } else {
+                while let Some(&c) = chars.peek() {
+                    if c.is_alphanumeric() || c == '_' {
+                        name.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            if !name.is_empty() {
+                vars.push(name);
+            }
+        }
+    }
+    vars
+}
+
+/// Wait for a child process with a deadline. Kills the child if the deadline passes.
+fn wait_with_deadline(
+    mut child: std::process::Child,
+    deadline: Instant,
+) -> Result<std::process::Output, String> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output()
+                    .map_err(|e| format!("failed to read output: {}", e));
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("command timed out".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(format!("error waiting for process: {}", e)),
+        }
+    }
+}
+
+/// Snap a byte-index down to the nearest UTF-8 char boundary (<= pos).
+fn floor_char_boundary(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return s.len();
+    }
+    let mut i = pos;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -51,6 +123,8 @@ pub struct Executor {
     allow_absolute: bool,
     allow_redirects: bool,
     max_output: usize,
+    timeout: std::time::Duration,
+    inherit_env: bool,
     approved_vars: HashSet<String>,
 }
 
@@ -61,6 +135,8 @@ impl Executor {
         allow_absolute: bool,
         allow_redirects: bool,
         max_output: usize,
+        timeout_secs: u64,
+        inherit_env: bool,
     ) -> Self {
         let approved_vars: HashSet<String> = APPROVED_VARS.iter().map(|s| s.to_string()).collect();
         Self {
@@ -69,7 +145,21 @@ impl Executor {
             allow_absolute,
             allow_redirects,
             max_output,
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            inherit_env,
             approved_vars,
+        }
+    }
+
+    /// Configure environment variables on a Command builder.
+    fn configure_env(&self, process: &mut Command) {
+        if !self.inherit_env {
+            process.env_clear();
+            for var in &self.approved_vars {
+                if let Ok(val) = std::env::var(var) {
+                    process.env(var, val);
+                }
+            }
         }
     }
 
@@ -77,7 +167,8 @@ impl Executor {
     fn validate(&self, program: &Program) -> Result<Vec<String>, String> {
         let mut command_names = Vec::new();
         for pipeline in &program.pipelines {
-            for cmd in &pipeline.commands {
+            let last_idx = pipeline.commands.len() - 1;
+            for (cmd_idx, cmd) in pipeline.commands.iter().enumerate() {
                 command_names.push(cmd.name.clone());
                 if !self.allowlist.is_allowed(&cmd.name) {
                     return Err(format!(
@@ -92,16 +183,36 @@ impl Executor {
                         "redirects are not allowed (use --allow-redirects to enable)".to_string()
                     );
                 }
+                if !cmd.redirects.is_empty() && cmd_idx < last_idx {
+                    return Err(format!(
+                        "redirects on non-final pipeline command '{}' are not supported",
+                        cmd.name
+                    ));
+                }
                 // Validate variable references
                 for arg in &cmd.args {
-                    if let Arg::Var(name) = arg {
-                        if !self.approved_vars.contains(name.as_str()) {
-                            return Err(format!(
-                                "variable '{}' not in approved list (approved: {})",
-                                name,
-                                APPROVED_VARS.join(", ")
-                            ));
+                    match arg {
+                        Arg::Var(name) => {
+                            if !self.approved_vars.contains(name.as_str()) {
+                                return Err(format!(
+                                    "variable '{}' not in approved list (approved: {})",
+                                    name,
+                                    APPROVED_VARS.join(", ")
+                                ));
+                            }
                         }
+                        Arg::DoubleQuoted(s) => {
+                            for var_name in extract_var_names(s) {
+                                if !self.approved_vars.contains(var_name.as_str()) {
+                                    return Err(format!(
+                                        "variable '{}' not in approved list (approved: {})",
+                                        var_name,
+                                        APPROVED_VARS.join(", ")
+                                    ));
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -212,8 +323,8 @@ impl Executor {
             // Truncate proportionally
             let stdout_limit = (self.max_output as f64 * (all_stdout.len() as f64 / total as f64)) as usize;
             let stderr_limit = self.max_output.saturating_sub(stdout_limit);
-            all_stdout.truncate(stdout_limit);
-            all_stderr.truncate(stderr_limit);
+            all_stdout.truncate(floor_char_boundary(&all_stdout, stdout_limit));
+            all_stderr.truncate(floor_char_boundary(&all_stderr, stderr_limit));
         }
 
         Output {
@@ -243,6 +354,7 @@ impl Executor {
             let mut process = Command::new(&cmd.name);
             process.args(&expanded_args);
             process.current_dir(&self.working_dir);
+            self.configure_env(&mut process);
 
             // Wire stdin from previous pipe
             if let Some(prev_out) = previous_stdout.take() {
@@ -269,15 +381,21 @@ impl Executor {
             }
         }
 
-        // Collect output from all children
+        // Collect output from all children with shared deadline
+        let deadline = Instant::now() + self.timeout;
         let mut all_stderr = String::new();
         let last = child_processes.len() - 1;
         let mut final_stdout = String::new();
         let mut final_exit_code = 0;
 
         for (i, child) in child_processes.into_iter().enumerate() {
-            let output = child.wait_with_output()
-                .map_err(|e| format!("failed to wait for process: {}", e))?;
+            let output = match wait_with_deadline(child, deadline) {
+                Ok(o) => o,
+                Err(e) => {
+                    // On timeout, remaining children are already gone (moved into iterator)
+                    return Err(e);
+                }
+            };
 
             all_stderr.push_str(&String::from_utf8_lossy(&output.stderr));
 
@@ -299,9 +417,38 @@ impl Executor {
     fn expand_command_args(&self, cmd: &ast::Command) -> Result<Vec<String>, String> {
         let mut expanded = Vec::new();
         for arg in &cmd.args {
+            // Check path traversal on user-supplied arguments (not variable expansions)
+            match arg {
+                Arg::Bare(s) => self.check_arg_path(s)?,
+                Arg::SingleQuoted(s) => self.check_arg_path(s)?,
+                Arg::DoubleQuoted(_) | Arg::Var(_) => {} // checked at validate time / trusted
+            }
             expanded.extend(self.expand_arg(arg)?);
         }
         Ok(expanded)
+    }
+
+    /// Reject arguments that traverse outside the working directory.
+    fn check_arg_path(&self, arg: &str) -> Result<(), String> {
+        // Skip flags
+        if arg.starts_with('-') {
+            return Ok(());
+        }
+        // Reject absolute paths unless allowed
+        if arg.starts_with('/') && !self.allow_absolute {
+            return Err(format!(
+                "absolute path '{}' in argument not allowed (use --allow-absolute)",
+                arg
+            ));
+        }
+        // Reject .. path components
+        if arg.split('/').any(|seg| seg == "..") {
+            return Err(format!(
+                "path traversal ('..') in argument '{}' not allowed",
+                arg
+            ));
+        }
+        Ok(())
     }
 
     fn execute_single_command(
@@ -313,14 +460,15 @@ impl Executor {
         let mut process = Command::new(&cmd.name);
         process.args(&expanded_args);
         process.current_dir(&self.working_dir);
+        self.configure_env(&mut process);
         process.stdout(Stdio::piped());
         process.stderr(Stdio::piped());
 
         let child = process.spawn()
             .map_err(|e| format!("failed to spawn '{}': {}", cmd.name, e))?;
 
-        let output = child.wait_with_output()
-            .map_err(|e| format!("failed to wait for '{}': {}", cmd.name, e))?;
+        let deadline = Instant::now() + self.timeout;
+        let output = wait_with_deadline(child, deadline)?;
 
         let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
