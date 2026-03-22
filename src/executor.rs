@@ -15,10 +15,6 @@ use crate::allowlist::{self, Allowlist};
 use crate::glob as rsh_glob;
 use crate::validator::{self, ValidatorConfig};
 
-fn is_false(v: &bool) -> bool {
-    !v
-}
-
 /// Wait for a child process with a deadline. Kills the child if the deadline passes.
 fn wait_with_deadline(
     mut child: std::process::Child,
@@ -57,26 +53,18 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 
-#[derive(Debug, serde::Serialize)]
 pub struct Output {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
-    pub commands: Vec<String>,
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "is_false")]
-    pub truncated: bool,
 }
 
 impl Output {
     pub fn error(msg: String) -> Self {
         Self {
             stdout: String::new(),
-            stderr: String::new(),
+            stderr: format!("rsh: {}\n", msg),
             exit_code: 1,
-            commands: Vec::new(),
-            error: Some(msg),
-            truncated: false,
         }
     }
 }
@@ -122,53 +110,38 @@ impl Executor {
             allow_redirects: self.allow_redirects,
             allow_absolute: self.allow_absolute,
         };
-        let command_names = match validator::validate(program, &self.allowlist, &config) {
-            Ok(names) => names,
-            Err(e) => return Output::error(e),
-        };
-
-        let mut local_vars: HashMap<String, String> = HashMap::new();
-        let mut all_stdout = String::new();
-        let mut all_stderr = String::new();
-        let last_exit_code;
-
-        match self.execute_program(program, &mut local_vars) {
-            Ok((stdout, stderr, code)) => {
-                all_stdout = stdout;
-                all_stderr = stderr;
-                last_exit_code = code;
-            }
-            Err(e) => {
-                return Output {
-                    stdout: all_stdout,
-                    stderr: all_stderr,
-                    exit_code: 1,
-                    commands: command_names,
-                    error: Some(e),
-                    truncated: false,
-                };
-            }
+        if let Err(e) = validator::validate(program, &self.allowlist, &config) {
+            return Output::error(e);
         }
 
+        let mut local_vars: HashMap<String, String> = HashMap::new();
+        let (mut all_stdout, mut all_stderr, last_exit_code) =
+            match self.execute_program(program, &mut local_vars) {
+                Ok(result) => result,
+                Err(e) => {
+                    return Output {
+                        stdout: String::new(),
+                        stderr: format!("rsh: {}\n", e),
+                        exit_code: 1,
+                    };
+                }
+            };
+
         // Truncate if needed
-        let mut truncated = false;
         let total = all_stdout.len() + all_stderr.len();
         if self.max_output > 0 && total > self.max_output {
-            truncated = true;
             let stdout_limit =
                 (self.max_output as f64 * (all_stdout.len() as f64 / total as f64)) as usize;
             let stderr_limit = self.max_output.saturating_sub(stdout_limit);
             all_stdout.truncate(floor_char_boundary(&all_stdout, stdout_limit));
             all_stderr.truncate(floor_char_boundary(&all_stderr, stderr_limit));
+            all_stderr.push_str("rsh: output truncated (exceeded limit)\n");
         }
 
         Output {
             stdout: all_stdout,
             stderr: all_stderr,
             exit_code: last_exit_code,
-            commands: command_names,
-            error: None,
-            truncated,
         }
     }
 

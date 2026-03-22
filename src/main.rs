@@ -3,11 +3,7 @@ mod executor;
 mod glob;
 mod validator;
 
-use executor::{Executor, Output};
-
-fn print_json(output: &Output) {
-    println!("{}", serde_json::to_string_pretty(output).unwrap());
-}
+use executor::Executor;
 
 fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
@@ -128,14 +124,14 @@ fn main() {
     let program = match parser.parse_program() {
         Ok(p) => p,
         Err(e) => {
-            print_json(&Output::error(format!("parse error: {}", e)));
+            eprintln!("rsh: parse error: {}", e);
             std::process::exit(1);
         }
     };
 
     // Check for empty program
     if program.complete_commands.is_empty() {
-        print_json(&Output::error("empty input".to_string()));
+        eprintln!("rsh: empty input");
         std::process::exit(1);
     }
 
@@ -151,7 +147,7 @@ fn main() {
         inherit_env,
     );
     let output = executor.execute(&program);
-    let exit_code = output.exit_code;
-    print_json(&output);
-    std::process::exit(exit_code);
+    print!("{}", output.stdout);
+    eprint!("{}", output.stderr);
+    std::process::exit(output.exit_code);
 }

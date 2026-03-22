@@ -10,12 +10,9 @@ fn test_simple_echo() {
         .arg("echo hello world")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    assert_eq!(json["stdout"].as_str().unwrap().trim(), "hello world");
-    assert!(json["error"].is_null());
-    let cmds = json["commands"].as_array().unwrap();
-    assert_eq!(cmds, &[serde_json::json!("echo")]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello world");
 }
 
 #[test]
@@ -24,12 +21,7 @@ fn test_pipeline() {
         .arg("echo -e 'line1\nline2\nline3' | head -n 1")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    let cmds = json["commands"].as_array().unwrap();
-    assert_eq!(cmds.len(), 2);
-    assert_eq!(cmds[0], "echo");
-    assert_eq!(cmds[1], "head");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -40,10 +32,10 @@ fn test_pwd() {
         .arg("pwd")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim();
     // On macOS, /tmp is a symlink to /private/tmp
-    let stdout = json["stdout"].as_str().unwrap().trim();
     assert!(
         stdout == "/tmp" || stdout == "/private/tmp",
         "unexpected pwd output: {}",
@@ -60,24 +52,20 @@ fn test_custom_allowlist() {
         .arg("ls")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("not in allowlist"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not in allowlist"));
 }
 
 #[test]
-fn test_json_output_structure() {
+fn test_output_structure() {
     let output = rsh_bin()
         .arg("echo test")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    // All required fields present
-    assert!(json["stdout"].is_string());
-    assert!(json["stderr"].is_string());
-    assert!(json["exit_code"].is_number());
-    assert!(json["commands"].is_array());
-    // error is null on success
-    assert!(json["error"].is_null());
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty());
 }
 
 #[test]
@@ -86,13 +74,10 @@ fn test_semicolons_multiple_pipelines() {
         .arg("echo hello; echo world")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
     assert!(stdout.contains("world"));
-    let cmds = json["commands"].as_array().unwrap();
-    assert_eq!(cmds.len(), 2);
 }
 
 #[test]
@@ -103,9 +88,9 @@ fn test_grep_with_quoted_pattern() {
         .arg("grep -r 'fn main' src/main.rs")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    assert!(json["stdout"].as_str().unwrap().contains("fn main"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fn main"));
 }
 
 #[test]
@@ -114,9 +99,9 @@ fn test_variable_expansion() {
         .arg("echo $HOME")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    let stdout = json["stdout"].as_str().unwrap().trim();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim();
     assert!(!stdout.is_empty(), "HOME should expand to something");
     assert!(!stdout.contains('$'), "variable should be expanded");
 }
@@ -127,8 +112,9 @@ fn test_unapproved_variable() {
         .arg("echo $SECRET_KEY")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("not in approved list"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not in approved list"));
 }
 
 #[test]
@@ -139,9 +125,8 @@ fn test_glob_expansion() {
         .arg("ls *.toml")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Cargo.toml"), "stdout was: {}", stdout);
 }
 
@@ -151,9 +136,8 @@ fn test_double_quoted_variable() {
         .arg(r#"echo "hello $HOME""#)
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.starts_with("hello /"), "stdout was: {}", stdout);
 }
 
@@ -163,8 +147,7 @@ fn test_three_stage_pipeline() {
         .arg("echo -e 'aaa\nbbb\nccc' | grep -c ''")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -173,8 +156,9 @@ fn test_path_in_command_rejected() {
         .arg("/usr/bin/grep foo")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("not in allowlist"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not in allowlist"));
 }
 
 #[test]
@@ -183,9 +167,9 @@ fn test_redirects_blocked_by_default() {
         .arg("echo hi > out.txt")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("redirects are not allowed"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("redirects are not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -201,9 +185,9 @@ fn test_redirect_path_traversal_blocked() {
         .arg("echo pwned > ../../etc/passwd")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("escapes working directory"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("escapes working directory"), "stderr was: {}", stderr);
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
@@ -221,8 +205,7 @@ fn test_append_redirect() {
         .arg("echo hello >> out.txt")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
     // Run again to append
     let output2 = rsh_bin()
@@ -232,8 +215,7 @@ fn test_append_redirect() {
         .arg("echo world >> out.txt")
         .output()
         .unwrap();
-    let json2: serde_json::Value = serde_json::from_slice(&output2.stdout).unwrap();
-    assert_eq!(json2["exit_code"], 0);
+    assert!(output2.status.success(), "stderr: {}", String::from_utf8_lossy(&output2.stderr));
 
     let content = std::fs::read_to_string(workdir.join("out.txt")).unwrap();
     assert!(content.contains("hello"), "content was: {}", content);
@@ -253,11 +235,12 @@ fn test_max_output_multibyte_no_panic() {
         .arg(r#"echo "héllo wörld""#)
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    // Should not panic; output should be valid JSON with truncated: true
-    assert_eq!(json["truncated"], true);
-    // stdout should be valid UTF-8 (serde parsed it fine)
-    assert!(json["stdout"].is_string());
+    // Should not panic; stderr should indicate truncation
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("output truncated"), "stderr was: {}", stderr);
+    // stdout should be bounded and valid UTF-8
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.len() <= 10, "stdout too long: {}", stdout.len());
 }
 
 // --- S2: argument path traversal ---
@@ -267,9 +250,9 @@ fn test_arg_path_traversal_rejected() {
         .arg("cat ../../etc/passwd")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("path traversal"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -278,9 +261,9 @@ fn test_arg_absolute_path_rejected() {
         .arg("cat /etc/passwd")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("absolute path"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("absolute path"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -293,9 +276,9 @@ fn test_arg_relative_path_ok() {
         .arg("cat src/main.rs")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("fn main"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fn main"));
 }
 
 #[test]
@@ -305,8 +288,7 @@ fn test_flags_not_rejected_as_paths() {
         .arg("ls -la")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 // --- S3: glob traversal ---
@@ -317,9 +299,9 @@ fn test_glob_traversal_rejected() {
         .arg("ls ../../*")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("path traversal"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
 
 // --- S4: double-quoted variable validation ---
@@ -330,10 +312,10 @@ fn test_double_quoted_unapproved_var_rejected_at_validate() {
         .arg(r#"echo "hello $SECRET_KEY""#)
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("not in approved list"), "error was: {}", err);
-    assert!(err.contains("SECRET_KEY"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not in approved list"), "stderr was: {}", stderr);
+    assert!(stderr.contains("SECRET_KEY"), "stderr was: {}", stderr);
 }
 
 // --- S5: execution timeout ---
@@ -351,9 +333,9 @@ fn test_timeout() {
         .output()
         .unwrap();
     let elapsed = start.elapsed();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("timed out"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("timed out"), "stderr was: {}", stderr);
     assert!(elapsed.as_secs() < 10, "took too long: {:?}", elapsed);
 }
 
@@ -368,9 +350,8 @@ fn test_env_sanitized_by_default() {
         .arg("env")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("RSH_TEST_SECRET"), "env leaked: {}", stdout);
     assert!(!stdout.contains("supersecret"), "secret leaked: {}", stdout);
 }
@@ -385,9 +366,8 @@ fn test_env_inherited_with_flag() {
         .arg("env")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["exit_code"], 0, "error: {:?}", json["error"]);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("RSH_TEST_VISIBLE"), "env not inherited: {}", stdout);
 }
 
@@ -399,9 +379,9 @@ fn test_redirect_on_non_final_pipeline_rejected() {
         .arg("echo hi > out.txt | head")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("non-final pipeline command"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("non-final pipeline command"), "stderr was: {}", stderr);
 }
 
 // --- Dangerous sub-command arguments / -exec validation ---
@@ -416,9 +396,9 @@ fn test_find_exec_with_allowlisted_command() {
         .arg("find src -name '*.rs' -exec grep -l 'fn main' {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("main.rs"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("main.rs"));
 }
 
 #[test]
@@ -431,9 +411,9 @@ fn test_find_exec_with_plus_terminator() {
         .arg("find src -name '*.rs' -exec wc -l {} +")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("total"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("total"));
 }
 
 #[test]
@@ -444,10 +424,10 @@ fn test_find_exec_with_non_allowlisted_command_blocked() {
         .arg("find . -name '*.rs' -exec rm {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("rm"), "error was: {}", err);
-    assert!(err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("rm"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -458,9 +438,9 @@ fn test_find_exec_with_path_command_blocked() {
         .arg("find . -exec /usr/bin/grep foo {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("bare command name"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("bare command name"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -472,8 +452,7 @@ fn test_find_execdir_with_allowlisted_command() {
         .arg("find src -name '*.rs' -execdir echo {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -483,10 +462,10 @@ fn test_find_execdir_with_non_allowlisted_command_blocked() {
         .arg("find . -execdir bash -c 'echo pwned' ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("bash"), "error was: {}", err);
-    assert!(err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("bash"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -496,9 +475,9 @@ fn test_find_delete_blocked() {
         .arg("find . -name '*.tmp' -delete")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("-delete"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-delete"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -508,9 +487,9 @@ fn test_find_ok_blocked() {
         .arg("find . -ok rm {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("-ok"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-ok"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -522,9 +501,7 @@ fn test_find_without_exec_allowed() {
         .arg("find src -name '*.rs' -type f")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
-    assert_eq!(json["exit_code"], 0);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -537,9 +514,9 @@ fn test_xargs_with_allowlisted_subcmd() {
         .arg("echo hello | xargs echo")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("hello"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello"));
 }
 
 #[test]
@@ -552,10 +529,10 @@ fn test_xargs_with_non_allowlisted_subcmd() {
         .arg("echo foo | xargs rm")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("rm"), "error was: {}", err);
-    assert!(err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("rm"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -567,9 +544,9 @@ fn test_xargs_with_path_subcmd_blocked() {
         .arg("echo foo | xargs /usr/bin/grep foo")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("bare command name"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("bare command name"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -581,10 +558,10 @@ fn test_xargs_interactive_flag_blocked() {
         .arg("echo foo | xargs -p echo")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("-p"), "error was: {}", err);
-    assert!(err.contains("not allowed"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-p"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -599,8 +576,7 @@ fn test_xargs_with_flags_and_allowlisted_subcmd() {
         .arg("echo Cargo.toml | xargs -I {} grep -l 'rsh' {}")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -613,9 +589,9 @@ fn test_xargs_no_subcmd_defaults_to_echo() {
         .arg("echo hello | xargs")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("hello"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello"));
 }
 
 #[test]
@@ -627,9 +603,9 @@ fn test_xargs_subcmd_path_traversal_blocked() {
         .arg("echo foo | xargs grep foo ../../etc/passwd")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("path traversal"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -640,7 +616,7 @@ fn test_find_exec_subcmd_path_traversal_blocked() {
         .arg("find . -exec grep foo ../../etc/passwd {} ';'")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("path traversal"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }

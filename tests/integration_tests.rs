@@ -10,35 +10,23 @@ fn rsh_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rsh"))
 }
 
-/// Helper: run an rsh command in the project directory, return parsed JSON.
-fn run(cmd: &str) -> serde_json::Value {
-    let output = rsh_bin()
+/// Helper: run an rsh command in the project directory, return Output.
+fn run(cmd: &str) -> std::process::Output {
+    rsh_bin()
         .arg("--inherit-env")
         .arg("--dir")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg(cmd)
         .output()
-        .unwrap();
-    serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON from rsh: {}\nstderr: {}", e,
-            String::from_utf8_lossy(&output.stderr)))
+        .unwrap()
 }
 
 /// Helper: run and assert success, return stdout.
 fn run_ok(cmd: &str) -> String {
-    let json = run(cmd);
-    assert!(json["error"].is_null(), "command '{}' failed: {}", cmd, json["error"]);
-    assert_eq!(json["exit_code"], 0, "command '{}' exit_code: {}", cmd, json["exit_code"]);
-    json["stdout"].as_str().unwrap().to_string()
-}
-
-/// Helper: run and assert error, return error string.
-#[allow(dead_code)]
-fn run_err(cmd: &str) -> String {
-    let json = run(cmd);
-    json["error"].as_str()
-        .unwrap_or_else(|| panic!("expected error for '{}', got success: {}", cmd, json["stdout"]))
-        .to_string()
+    let output = run(cmd);
+    assert!(output.status.success(), "command '{}' failed.\nstderr: {}", cmd,
+        String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 // ============================================================
@@ -144,10 +132,10 @@ fn test_grep_pipe_in_quotes() {
 
 #[test]
 fn test_grep_no_match_exit_code() {
-    let json = run("grep 'ZZZZZ_NONEXISTENT_PATTERN_ZZZZZ' src/main.rs");
-    assert!(json["error"].is_null());
-    assert_eq!(json["exit_code"], 1, "grep no-match should exit 1");
-    assert_eq!(json["stdout"].as_str().unwrap(), "");
+    let output = run("grep 'ZZZZZ_NONEXISTENT_PATTERN_ZZZZZ' src/main.rs");
+    assert!(!output.status.success(), "grep no-match should exit non-zero");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "");
 }
 
 // ============================================================
@@ -452,13 +440,11 @@ fn test_semicolon_three_commands() {
 
 #[test]
 fn test_semicolon_mixed_commands() {
-    let json = run("echo start; wc -l src/glob.rs; echo end");
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
-    let out = json["stdout"].as_str().unwrap();
+    let output = run("echo start; wc -l src/glob.rs; echo end");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.starts_with("start\n"));
     assert!(out.ends_with("end\n"));
-    let cmds = json["commands"].as_array().unwrap();
-    assert_eq!(cmds.len(), 3);
 }
 
 #[test]
@@ -489,9 +475,9 @@ fn test_glob_question_mark() {
 #[test]
 fn test_glob_no_match_passthrough() {
     // Glob with no matches passes the pattern through (shell behavior)
-    let json = run("echo zzz_no_match_*.xyz");
-    assert!(json["error"].is_null());
-    let out = json["stdout"].as_str().unwrap();
+    let output = run("echo zzz_no_match_*.xyz");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.contains("zzz_no_match_*.xyz"), "unmatched glob should pass through: {}", out);
 }
 
@@ -521,8 +507,10 @@ fn test_workflow_search_for_struct_definitions() {
 fn test_workflow_find_todos() {
     // Common agent task: search for TODO/FIXME across codebase
     // This should succeed even if there are no matches (exit code 1 for no matches is ok)
-    let json = run("grep -rn 'TODO\\|FIXME' src/");
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    let output = run("grep -rn 'TODO\\|FIXME' src/");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Should not be a validation error (rsh: prefix means validation failure)
+    assert!(!stderr.starts_with("rsh: "), "unexpected validation error: {}", stderr);
 }
 
 #[test]
@@ -547,8 +535,9 @@ fn test_workflow_grep_pipe_grep_refine_search() {
     // Agent first finds all function defs, then narrows to non-pub ones
     // glob.rs has no private functions, so the result is empty (exit code 1)
     // The point is the double-grep pipeline works without validation error
-    let json = run("grep -n 'fn ' src/glob.rs | grep -v 'pub'");
-    assert!(json["error"].is_null());
+    let output = run("grep -n 'fn ' src/glob.rs | grep -v 'pub'");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.starts_with("rsh: "), "unexpected validation error: {}", stderr);
 }
 
 #[test]
@@ -577,13 +566,11 @@ fn test_workflow_check_cargo_dependencies() {
 #[test]
 fn test_workflow_semicolons_multi_inspect() {
     // Agent runs multiple independent inspection commands
-    let json = run("wc -l src/main.rs; grep -c 'fn ' src/executor.rs; ls src/");
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
-    let cmds = json["commands"].as_array().unwrap();
-    assert_eq!(cmds.len(), 3);
-    assert_eq!(cmds[0], "wc");
-    assert_eq!(cmds[1], "grep");
-    assert_eq!(cmds[2], "ls");
+    let output = run("wc -l src/main.rs; grep -c 'fn ' src/executor.rs; ls src/");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
+    // Should contain output from all three commands
+    assert!(!out.is_empty());
 }
 
 // ============================================================
@@ -615,10 +602,10 @@ fn test_find_with_not() {
 #[test]
 fn test_empty_pipeline_stage_stderr() {
     // grep with no matches in a pipeline — downstream gets empty input
-    let json = run("grep 'ZZZNONEXISTENT' src/main.rs | wc -l");
-    assert!(json["error"].is_null());
-    let out = json["stdout"].as_str().unwrap().trim();
-    assert_eq!(out, "0", "wc -l of empty input should be 0, got '{}'", out);
+    let output = run("grep 'ZZZNONEXISTENT' src/main.rs | wc -l");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out.trim(), "0", "wc -l of empty input should be 0, got '{}'", out.trim());
 }
 
 #[test]
@@ -636,10 +623,10 @@ fn test_mixed_quote_types() {
 #[test]
 fn test_find_with_empty_result_in_pipeline() {
     // find something that doesn't exist, pipe to wc
-    let json = run("find src -name '*.xyz' -type f | wc -l");
-    assert!(json["error"].is_null());
-    let out = json["stdout"].as_str().unwrap().trim();
-    assert_eq!(out, "0");
+    let output = run("find src -name '*.xyz' -type f | wc -l");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let out = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(out.trim(), "0");
 }
 
 #[test]
@@ -663,20 +650,19 @@ fn test_ls_pipe_grep_filters_filenames() {
 
 #[test]
 fn test_cat_nonexistent_file() {
-    let json = run("cat nonexistent_file_abc.txt");
-    assert!(json["error"].is_null(), "should be an exec error not a validation error");
-    assert_ne!(json["exit_code"], 0);
-    let stderr = json["stderr"].as_str().unwrap();
+    let output = run("cat nonexistent_file_abc.txt");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.is_empty(), "cat should report error on stderr");
 }
 
 #[test]
 fn test_grep_binary_flag_quiet() {
     // grep -q returns exit code only, no stdout
-    let json = run("grep -q 'fn main' src/main.rs");
-    assert!(json["error"].is_null());
-    assert_eq!(json["exit_code"], 0);
-    assert_eq!(json["stdout"].as_str().unwrap(), "");
+    let output = run("grep -q 'fn main' src/main.rs");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "");
 }
 
 // ============================================================
@@ -702,8 +688,7 @@ fn test_redirect_grep_output_to_file() {
         .arg("grep 'pub' glob.rs > structs.txt")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
     let content = std::fs::read_to_string(tmp.join("structs.txt")).unwrap();
     assert!(content.contains("pub fn"));
@@ -730,8 +715,7 @@ fn test_redirect_pipeline_to_file() {
         .arg("grep 'fn ' executor.rs | head -n 5 > top_fns.txt")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 
     let content = std::fs::read_to_string(tmp.join("top_fns.txt")).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -747,20 +731,18 @@ fn test_redirect_pipeline_to_file() {
 #[test]
 fn test_fast_command_within_timeout() {
     // A fast command should complete well within the timeout
-    let json: serde_json::Value = serde_json::from_slice(
-        &rsh_bin()
-            .arg("--inherit-env")
-            .arg("--timeout")
-            .arg("5")
-            .arg("--dir")
-            .arg(env!("CARGO_MANIFEST_DIR"))
-            .arg("echo fast")
-            .output()
-            .unwrap()
-            .stdout
-    ).unwrap();
-    assert!(json["error"].is_null());
-    assert_eq!(json["stdout"].as_str().unwrap().trim(), "fast");
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("--timeout")
+        .arg("5")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("echo fast")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "fast");
 }
 
 // ============================================================

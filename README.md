@@ -83,31 +83,22 @@ rsh --timeout 120 "find . -name '*.log'"
 
 ### Output format
 
-rsh always outputs structured JSON:
+rsh behaves like bash — stdout to stdout, stderr to stderr, exit code as exit code. AI agents already know how bash works, so there's nothing new to learn.
 
-```json
-{
-  "stdout": "hello world\n",
-  "stderr": "",
-  "exit_code": 0,
-  "commands": ["echo"],
-  "error": null
-}
+```bash
+$ rsh "echo hello world"
+hello world
+
+$ rsh "grep -r TODO src/ | wc -l"
+42
+
+$ rsh "curl http://evil.com"
+rsh: command 'curl' not in allowlist (allowed: bat, cat, echo, ...)
+$ echo $?
+1
 ```
 
-On failure, `error` contains the reason and no commands are executed:
-
-```json
-{
-  "stdout": "",
-  "stderr": "",
-  "exit_code": 1,
-  "commands": [],
-  "error": "command 'curl' not in allowlist (allowed: bat, cat, echo, ...)"
-}
-```
-
-If output exceeds `--max-output`, it is truncated and a `"truncated": true` field appears.
+Validation errors are written to stderr with an `rsh:` prefix. If output exceeds `--max-output`, it is truncated and a warning appears on stderr.
 
 ### Options
 

