@@ -23,7 +23,7 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     // Path utilities
     "basename", "dirname", "realpath",
     // Misc
-    "echo", "date", "true", "false", "test", "xargs",
+    "echo", "date", "true", "false", "test",
 ];
 
 /// Environment variables approved for use in command arguments and expansion.

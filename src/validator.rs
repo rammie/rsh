@@ -622,7 +622,8 @@ impl<'a> ValidatorContext<'a> {
             }
             // Strip leading address: digits, commas, ~, $, spaces,
             // and /regex/ delimiters
-            let cmd_part = strip_sed_address(trimmed);
+            let after_addr = strip_sed_address(trimmed);
+            let cmd_part = after_addr.trim_start_matches(|c: char| c == '{' || c == '}' || c == '!' || c == ' ' || c == '\t');
             // Check for w or W command (write to file)
             if cmd_part.starts_with('w') || cmd_part.starts_with('W') {
                 let rest = &cmd_part[1..];

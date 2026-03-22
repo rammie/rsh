@@ -916,3 +916,148 @@ fn test_redirect_to_real_file_still_blocked_without_flag() {
     assert!(stderr.contains("redirect") || stderr.contains("not allowed"),
         "stderr was: {}", stderr);
 }
+
+// --- Sandbox escape: xargs stdin argument injection ---
+//
+// xargs passes stdin content as additional arguments to the sub-command at
+// runtime.  rsh validates the sub-command and its *static* arguments at parse
+// time, but anything appended from stdin bypasses that check.  These tests
+// verify that rsh blocks (or neutralises) the dynamic injection of blocked
+// flags via xargs.
+
+#[test]
+fn test_xargs_stdin_injects_sed_i_flag() {
+    // echo '-ibak' | xargs -I{} sed {} 's/old/new/' file
+    // At runtime xargs replaces {} with -ibak, so sed runs with -ibak
+    // (in-place edit) — must be blocked.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("target.txt"), "original\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("echo '-ibak' | xargs -I{} sed {} 's/original/HACKED/' target.txt")
+        .output()
+        .unwrap();
+
+    // The file must NOT have been modified
+    let content = std::fs::read_to_string(dir.path().join("target.txt")).unwrap();
+    assert_eq!(content, "original\n",
+        "xargs -I{{}} injected sed -ibak and modified the file! (content: {})", content);
+    assert!(!output.status.success(),
+        "should reject xargs -I{{}} with sed flag injection, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_xargs_stdin_injects_sed_i_flag_simple() {
+    // echo '-ibak s/old/new/ file' | xargs sed
+    // xargs appends all stdin tokens as args, making sed run with -ibak.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("target.txt"), "original\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("echo '-ibak s/original/HACKED/ target.txt' | xargs sed")
+        .output()
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join("target.txt")).unwrap();
+    assert_eq!(content, "original\n",
+        "plain xargs injected sed -ibak from stdin! (content: {})", content);
+    assert!(!output.status.success(),
+        "should reject xargs stdin injection of sed -i, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_xargs_stdin_injects_find_delete() {
+    // echo '-delete' | xargs -I{} find . -name target.txt {}
+    // At runtime xargs replaces {} with -delete, bypassing find's blocked flag check.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("target.txt"), "keep me\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("echo '-delete' | xargs -I{} find . -name target.txt {}")
+        .output()
+        .unwrap();
+
+    assert!(dir.path().join("target.txt").exists(),
+        "xargs -I{{}} injected find -delete and removed the file!");
+    assert!(!output.status.success(),
+        "should reject xargs -I{{}} with find -delete injection, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_xargs_stdin_injects_sort_output() {
+    // echo '--output=stolen.txt input.txt' | xargs sort
+    // xargs appends stdin tokens, making sort write to a file via --output.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("input.txt"), "banana\napple\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("echo '--output=stolen.txt input.txt' | xargs sort")
+        .output()
+        .unwrap();
+
+    assert!(!dir.path().join("stolen.txt").exists(),
+        "xargs injected sort --output and created a file!");
+    assert!(!output.status.success(),
+        "should reject xargs stdin injection of sort --output, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
+
+// --- Sandbox escape: sed brace-group write command bypass ---
+//
+// check_sed_expr_for_write splits on ';' and '\n', then checks whether each
+// segment starts with 'w' or 'W' after stripping the address prefix.  But if
+// the write command is inside a { … } group, the '{' is returned as the
+// "command" character instead, and the inner 'w' goes undetected.
+
+#[test]
+fn test_sed_brace_group_w_bypass() {
+    // sed '{ w output.txt\n}' input.txt  (with a literal newline)
+    // The w command inside braces is not caught by check_sed_expr_for_write.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("input.txt"), "secret data\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("sed -n '{ w output.txt\n}' input.txt")
+        .output()
+        .unwrap();
+
+    assert!(!dir.path().join("output.txt").exists(),
+        "sed '{{ w file }}' bypassed write detection and created output.txt!");
+    assert!(!output.status.success(),
+        "should reject sed w command inside brace group, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_sed_brace_group_w_with_address_bypass() {
+    // sed '1{ w output.txt\n}' input.txt — write command with address + brace group.
+    // The address '1' is stripped but '{' remains, hiding the 'w' command.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("input.txt"), "secret data\n").unwrap();
+
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(dir.path())
+        .arg("sed -n '1{ w output.txt\n}' input.txt")
+        .output()
+        .unwrap();
+
+    assert!(!dir.path().join("output.txt").exists(),
+        "sed '1{{ w file }}' bypassed write detection and created output.txt!");
+    assert!(!output.status.success(),
+        "should reject sed w command inside addressed brace group, stderr: {}",
+        String::from_utf8_lossy(&output.stderr));
+}
