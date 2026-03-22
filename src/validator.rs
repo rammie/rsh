@@ -201,28 +201,8 @@ impl<'a> ValidatorContext<'a> {
         // Extract plain string values for flag-based validation
         let string_args: Vec<&str> = arg_words.iter().map(|w| w.value.as_str()).collect();
 
-        // Check unconditionally blocked flags (exact match)
-        if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
-            for val in &string_args {
-                if blocked_flags.contains(val) {
-                    return Err(format!("'{}' flag on '{}' is not allowed", val, cmd_name));
-                }
-            }
-        }
-
-        // Check prefix-blocked flags (e.g., sed -i, -i.bak, -ibak all blocked)
-        if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
-            for val in &string_args {
-                for prefix in *blocked_prefixes {
-                    if val.starts_with(prefix) {
-                        return Err(format!(
-                            "'{}' flag on '{}' is not allowed (writes files in place)",
-                            val, cmd_name
-                        ));
-                    }
-                }
-            }
-        }
+        // Check blocked flags (exact match and prefix match)
+        self.check_blocked_flags(&cmd_name, &string_args, None)?;
 
         // Validate sub-command execution flags (-exec, --exec, etc.)
         self.validate_exec_flags(&cmd_name, &string_args)?;
@@ -533,6 +513,42 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
+    /// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
+    /// If `context` is provided, it's included in the error message (for sub-commands).
+    fn check_blocked_flags(&self, cmd: &str, args: &[&str], context: Option<&str>) -> Result<(), String> {
+        if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd) {
+            for arg in args {
+                if blocked_flags.contains(arg) {
+                    return Err(match context {
+                        Some(ctx) => format!("'{}' flag on '{}' in {} is not allowed", arg, cmd, ctx),
+                        None => format!("'{}' flag on '{}' is not allowed", arg, cmd),
+                    });
+                }
+            }
+        }
+        if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd) {
+            for arg in args {
+                for prefix in *blocked_prefixes {
+                    if arg.starts_with(prefix) {
+                        return Err(match context {
+                            Some(ctx) => format!("'{}' flag on '{}' in {} is not allowed (writes files in place)", arg, cmd, ctx),
+                            None => format!("'{}' flag on '{}' is not allowed (writes files in place)", arg, cmd),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate a sub-command's flags and recursively check for nested -exec/xargs.
+    fn validate_sub_command_flags(&self, sub_cmd: &str, sub_args: &[&str], context: &str) -> Result<(), String> {
+        self.check_blocked_flags(sub_cmd, sub_args, Some(context))?;
+        self.validate_exec_flags(sub_cmd, sub_args)?;
+        self.validate_xargs(sub_cmd, sub_args)?;
+        Ok(())
+    }
+
     fn check_sub_arg_path(&self, arg: &str, context: &str) -> Result<(), String> {
         if arg.split('/').any(|seg| seg == "..") {
             return Err(format!(
@@ -569,8 +585,11 @@ impl<'a> ValidatorContext<'a> {
                 }
 
                 let context = format!("{} {}", cmd_name, flag);
-                self.check_sub_command(args[i], &context)?;
+                let sub_cmd = args[i];
+                self.check_sub_command(sub_cmd, &context)?;
 
+                // Collect sub-command args (everything until terminator)
+                let sub_args_start = i + 1;
                 i += 1;
                 while i < args.len() {
                     if matches!(args[i], ";" | "+" | "{}") {
@@ -579,6 +598,10 @@ impl<'a> ValidatorContext<'a> {
                     self.check_sub_arg_path(args[i], &context)?;
                     i += 1;
                 }
+
+                let sub_args = &args[sub_args_start..i];
+
+                self.validate_sub_command_flags(sub_cmd, sub_args, &context)?;
             }
             i += 1;
         }
@@ -622,11 +645,12 @@ impl<'a> ValidatorContext<'a> {
             // First positional argument is the sub-command
             self.check_sub_command(a, "xargs")?;
 
-            i += 1;
-            while i < args.len() {
-                self.check_sub_arg_path(args[i], "xargs")?;
-                i += 1;
+            let sub_args = &args[i + 1..];
+            for arg in sub_args {
+                self.check_sub_arg_path(arg, "xargs")?;
             }
+
+            self.validate_sub_command_flags(a, sub_args, "xargs")?;
             return Ok(());
         }
 

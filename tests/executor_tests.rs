@@ -599,3 +599,91 @@ fn test_find_exec_subcmd_path_traversal_blocked() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
+
+// --- Sub-command flag validation bypass ---
+
+#[test]
+fn test_find_exec_sed_inplace_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -name '*.txt' -exec sed -i 's/foo/bar/' {} ';'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
+    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
+    assert!(stderr.contains("in place"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_xargs_sed_inplace_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs,sed")
+        .arg("--inherit-env")
+        .arg("echo file.txt | xargs sed -i 's/foo/bar/'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
+    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
+    assert!(stderr.contains("in place"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_find_exec_find_delete_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("find . -exec find /tmp -delete ';'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-delete"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_find_exec_grep_still_works() {
+    // grep with no blocked flags should still be allowed in -exec
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("find src -name '*.rs' -exec grep -l 'validate' {} ';'")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_nested_find_exec_sed_inplace_blocked() {
+    // find -exec find -exec sed -i — nested chain must be caught
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg("--allow-absolute")
+        .arg("find . -exec find /tmp -exec sed -i 's/x/y/' {} ';' ';'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
+    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_xargs_find_exec_sed_inplace_blocked() {
+    // xargs find -exec sed -i — cross-tool nested chain
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("echo,xargs,find,sed")
+        .arg("--inherit-env")
+        .arg("echo dir | xargs find -exec sed -i 's/x/y/' {} ';'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
+    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
+}
