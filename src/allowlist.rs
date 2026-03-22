@@ -14,6 +14,12 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "ls", "eza", "wc", "echo", "stat", "pwd",
 ];
 
+/// Environment variables approved for use in command arguments and expansion.
+pub const APPROVED_VARS: &[&str] = &[
+    "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER", "TMPDIR",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+];
+
 #[derive(Debug, Clone)]
 pub struct Allowlist {
     commands: HashSet<String>,

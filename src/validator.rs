@@ -14,7 +14,7 @@ use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
 use brush_parser::ParserOptions;
 
-use crate::allowlist::Allowlist;
+use crate::allowlist::{self, Allowlist};
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
@@ -35,12 +35,6 @@ const XARGS_FLAGS_WITH_ARG: &[&str] = &[
 /// xargs flags that are always blocked (interactive / dangerous).
 const XARGS_BLOCKED_FLAGS: &[&str] = &["-p", "--interactive"];
 
-/// Approved environment variables that can be referenced.
-const APPROVED_VARS: &[&str] = &[
-    "HOME", "USER", "PATH", "PWD", "LANG", "TERM",
-    "SHELL", "EDITOR", "PAGER", "TMPDIR", "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME", "XDG_CACHE_HOME",
-];
 
 /// Configuration passed into the validator.
 pub struct ValidatorConfig {
@@ -55,7 +49,7 @@ pub fn validate(
     allowlist: &Allowlist,
     config: &ValidatorConfig,
 ) -> Result<Vec<String>, String> {
-    let approved_vars: HashSet<String> = APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+    let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
     let mut ctx = ValidatorContext {
         allowlist,
         config,
@@ -184,32 +178,17 @@ impl<'a> ValidatorContext<'a> {
         let mut arg_words: Vec<&Word> = Vec::new();
         let mut redirects: Vec<&IoRedirect> = Vec::new();
 
-        if let Some(prefix) = &cmd.prefix {
-            for item in &prefix.0 {
-                match item {
-                    CommandPrefixOrSuffixItem::Word(w) => arg_words.push(w),
-                    CommandPrefixOrSuffixItem::IoRedirect(r) => redirects.push(r),
-                    CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {
-                        return Err("variable assignments are not allowed".to_string());
-                    }
-                    CommandPrefixOrSuffixItem::ProcessSubstitution(_, _) => {
-                        return Err("process substitution is not allowed".to_string());
-                    }
+        let prefix_items = cmd.prefix.iter().flat_map(|p| &p.0);
+        let suffix_items = cmd.suffix.iter().flat_map(|s| &s.0);
+        for item in prefix_items.chain(suffix_items) {
+            match item {
+                CommandPrefixOrSuffixItem::Word(w) => arg_words.push(w),
+                CommandPrefixOrSuffixItem::IoRedirect(r) => redirects.push(r),
+                CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {
+                    return Err("variable assignments are not allowed".to_string());
                 }
-            }
-        }
-
-        if let Some(suffix) = &cmd.suffix {
-            for item in &suffix.0 {
-                match item {
-                    CommandPrefixOrSuffixItem::Word(w) => arg_words.push(w),
-                    CommandPrefixOrSuffixItem::IoRedirect(r) => redirects.push(r),
-                    CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {
-                        return Err("variable assignments are not allowed".to_string());
-                    }
-                    CommandPrefixOrSuffixItem::ProcessSubstitution(_, _) => {
-                        return Err("process substitution is not allowed".to_string());
-                    }
+                CommandPrefixOrSuffixItem::ProcessSubstitution(_, _) => {
+                    return Err("process substitution is not allowed".to_string());
                 }
             }
         }
@@ -410,7 +389,7 @@ impl<'a> ValidatorContext<'a> {
                     return Err(format!(
                         "variable '{}' not in approved list (approved: {})",
                         name,
-                        APPROVED_VARS.join(", ")
+                        allowlist::APPROVED_VARS.join(", ")
                     ));
                 }
             }
@@ -420,7 +399,7 @@ impl<'a> ValidatorContext<'a> {
                     return Err(format!(
                         "variable '{}' not in approved list (approved: {})",
                         name,
-                        APPROVED_VARS.join(", ")
+                        allowlist::APPROVED_VARS.join(", ")
                     ));
                 }
             }

@@ -11,7 +11,7 @@ use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
 use brush_parser::ParserOptions;
 
-use crate::allowlist::Allowlist;
+use crate::allowlist::{self, Allowlist};
 use crate::glob as rsh_glob;
 use crate::validator::{self, ValidatorConfig};
 
@@ -56,11 +56,6 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
     i
 }
 
-/// Approved environment variables.
-const APPROVED_VARS: &[&str] = &[
-    "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER", "TMPDIR",
-    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
-];
 
 #[derive(Debug, serde::Serialize)]
 pub struct Output {
@@ -107,7 +102,7 @@ impl Executor {
         timeout_secs: u64,
         inherit_env: bool,
     ) -> Self {
-        let approved_vars: HashSet<String> = APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+        let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
         Self {
             allowlist,
             working_dir,
@@ -407,7 +402,7 @@ impl Executor {
                 let (mut stdout, stderr, code) =
                     self.execute_compound_command(compound, local_vars)?;
                 if let Some(redirect_list) = redirects {
-                    let io_redirects = self.collect_redirects_from_list(redirect_list);
+                    let io_redirects = self.collect_redirects_from_list(redirect_list, local_vars);
                     if !io_redirects.is_empty() {
                         stdout = self.apply_redirects(&stdout, &io_redirects)?;
                     }
@@ -483,43 +478,21 @@ impl Executor {
         let mut args = Vec::new();
         let mut redirects = Vec::new();
 
-        // Process prefix items
-        if let Some(prefix) = &cmd.prefix {
-            for item in &prefix.0 {
-                match item {
-                    CommandPrefixOrSuffixItem::Word(w) => {
-                        // Only check path traversal on literal words (no $VAR or $())
-                        if self.word_is_literal(&w.value) {
-                            self.check_arg_path(&w.value)?;
-                        }
-                        let expanded = self.expand_word(w, local_vars)?;
-                        args.extend(expanded);
+        // Process prefix and suffix items
+        let prefix_items = cmd.prefix.iter().flat_map(|p| &p.0);
+        let suffix_items = cmd.suffix.iter().flat_map(|s| &s.0);
+        for item in prefix_items.chain(suffix_items) {
+            match item {
+                CommandPrefixOrSuffixItem::Word(w) => {
+                    if self.word_is_literal(&w.value) {
+                        self.check_arg_path(&w.value)?;
                     }
-                    CommandPrefixOrSuffixItem::IoRedirect(r) => {
-                        redirects.extend(self.extract_redirect(r, local_vars)?);
-                    }
-                    _ => {}
+                    args.extend(self.expand_word(w, local_vars)?);
                 }
-            }
-        }
-
-        // Process suffix items
-        if let Some(suffix) = &cmd.suffix {
-            for item in &suffix.0 {
-                match item {
-                    CommandPrefixOrSuffixItem::Word(w) => {
-                        // Only check path traversal on literal words (no $VAR or $())
-                        if self.word_is_literal(&w.value) {
-                            self.check_arg_path(&w.value)?;
-                        }
-                        let expanded = self.expand_word(w, local_vars)?;
-                        args.extend(expanded);
-                    }
-                    CommandPrefixOrSuffixItem::IoRedirect(r) => {
-                        redirects.extend(self.extract_redirect(r, local_vars)?);
-                    }
-                    _ => {}
+                CommandPrefixOrSuffixItem::IoRedirect(r) => {
+                    redirects.extend(self.extract_redirect(r, local_vars)?);
                 }
+                _ => {}
             }
         }
 
@@ -737,8 +710,10 @@ impl Executor {
         word: &Word,
         local_vars: &HashMap<String, String>,
     ) -> Result<String, String> {
-        let pieces = self.expand_word_pieces(&word.value, local_vars)?;
-        Ok(pieces.join(""))
+        let opts = ParserOptions::default();
+        let pieces =
+            word::parse(&word.value, &opts).map_err(|e| format!("word parse error: {}", e))?;
+        self.expand_pieces(&pieces, local_vars)
     }
 
     /// Expand a word, potentially producing multiple strings (glob expansion + word splitting).
@@ -747,10 +722,13 @@ impl Executor {
         word: &Word,
         local_vars: &HashMap<String, String>,
     ) -> Result<Vec<String>, String> {
-        // Check if this word needs word splitting (contains unquoted $() or $VAR)
-        let needs_split = self.word_needs_splitting(&word.value);
+        // Parse word pieces once and reuse for all checks + expansion
+        let opts = ParserOptions::default();
+        let pieces =
+            word::parse(&word.value, &opts).map_err(|e| format!("word parse error: {}", e))?;
 
-        let expanded = self.expand_word_to_string(word, local_vars)?;
+        let needs_split = pieces_need_splitting(&pieces);
+        let expanded = self.expand_pieces(&pieces, local_vars)?;
 
         if needs_split {
             // Word-split by whitespace (IFS), then glob-expand each part
@@ -767,35 +745,17 @@ impl Executor {
                 }
             }
             if results.is_empty() {
-                // Empty expansion produces no arguments (not an empty string)
                 return Ok(Vec::new());
             }
             return Ok(results);
         }
 
         // Try glob expansion — only on words that have unquoted glob chars
-        if self.word_has_unquoted_glob(&word.value) {
+        if pieces_have_unquoted_glob(&pieces) {
             return rsh_glob::expand_glob(&expanded, &self.working_dir, self.allow_absolute);
         }
 
         Ok(vec![expanded])
-    }
-
-    /// Check if a word contains unquoted glob characters (*, ?, [).
-    fn word_has_unquoted_glob(&self, raw: &str) -> bool {
-        let opts = ParserOptions::default();
-        let pieces = match word::parse(raw, &opts) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        for p in &pieces {
-            if let WordPiece::Text(s) = &p.piece {
-                if rsh_glob::is_glob(s) {
-                    return true;
-                }
-            }
-        }
-        false
     }
 
     /// Check if a word is literal (no variable references, command substitutions, etc.)
@@ -805,58 +765,18 @@ impl Executor {
             Ok(p) => p,
             Err(_) => return true,
         };
-        for p in &pieces {
-            match &p.piece {
-                WordPiece::Text(_)
-                | WordPiece::SingleQuotedText(_)
-                | WordPiece::EscapeSequence(_) => {}
-                WordPiece::DoubleQuotedSequence(inner) => {
-                    for ip in inner {
-                        match &ip.piece {
-                            WordPiece::Text(_) | WordPiece::EscapeSequence(_) => {}
-                            _ => return false,
-                        }
-                    }
-                }
-                _ => return false,
-            }
-        }
-        true
+        pieces_are_literal(&pieces)
     }
 
-    /// Check if a word's raw value contains unquoted command substitution or variable reference
-    /// that would require word splitting after expansion.
-    fn word_needs_splitting(&self, raw: &str) -> bool {
-        let opts = ParserOptions::default();
-        let pieces = match word::parse(raw, &opts) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-        for p in &pieces {
-            match &p.piece {
-                WordPiece::CommandSubstitution(_)
-                | WordPiece::BackquotedCommandSubstitution(_) => return true,
-                // Don't split for plain $VAR or ${VAR} — shell only splits $() and `...`
-                // Actually in shell, unquoted $VAR is also word-split. But for safety/simplicity
-                // we only split command substitutions for now.
-                _ => {}
-            }
-        }
-        false
-    }
-
-    /// Parse word pieces and expand them.
-    fn expand_word_pieces(
+    /// Expand a parsed word piece list into a single string.
+    fn expand_pieces(
         &self,
-        raw: &str,
+        pieces: &[word::WordPieceWithSource],
         local_vars: &HashMap<String, String>,
-    ) -> Result<Vec<String>, String> {
-        let opts = ParserOptions::default();
-        let pieces =
-            word::parse(raw, &opts).map_err(|e| format!("word parse error: {}", e))?;
-        let mut result = Vec::new();
-        for p in &pieces {
-            result.push(self.expand_piece(&p.piece, local_vars)?);
+    ) -> Result<String, String> {
+        let mut result = String::new();
+        for p in pieces {
+            result.push_str(&self.expand_piece(&p.piece, local_vars)?);
         }
         Ok(result)
     }
@@ -945,8 +865,10 @@ impl Executor {
                 };
                 if is_empty {
                     if let Some(default) = default_value {
-                        self.expand_word_pieces(default, local_vars)
-                            .map(|v| v.join(""))
+                        let opts = ParserOptions::default();
+                        let pieces = word::parse(default, &opts)
+                            .map_err(|e| format!("word parse error: {}", e))?;
+                        self.expand_pieces(&pieces, local_vars)
                     } else {
                         Ok(String::new())
                     }
@@ -1086,11 +1008,10 @@ impl Executor {
         }
     }
 
-    fn collect_redirects_from_list(&self, list: &RedirectList) -> Vec<RedirectInfo> {
-        let empty_vars = HashMap::new();
+    fn collect_redirects_from_list(&self, list: &RedirectList, local_vars: &HashMap<String, String>) -> Vec<RedirectInfo> {
         let mut result = Vec::new();
         for r in &list.0 {
-            if let Ok(infos) = self.extract_redirect(r, &empty_vars) {
+            if let Ok(infos) = self.extract_redirect(r, local_vars) {
                 result.extend(infos);
             }
         }
@@ -1174,6 +1095,32 @@ struct RedirectInfo {
 enum RedirectKindSimple {
     Overwrite,
     Append,
+}
+
+/// Check if parsed word pieces contain unquoted glob characters.
+fn pieces_have_unquoted_glob(pieces: &[word::WordPieceWithSource]) -> bool {
+    pieces.iter().any(|p| matches!(&p.piece, WordPiece::Text(s) if rsh_glob::is_glob(s)))
+}
+
+/// Check if parsed word pieces are all literal (no expansions).
+fn pieces_are_literal(pieces: &[word::WordPieceWithSource]) -> bool {
+    pieces.iter().all(|p| match &p.piece {
+        WordPiece::Text(_) | WordPiece::SingleQuotedText(_) | WordPiece::EscapeSequence(_) => true,
+        WordPiece::DoubleQuotedSequence(inner) => inner.iter().all(|ip| {
+            matches!(&ip.piece, WordPiece::Text(_) | WordPiece::EscapeSequence(_))
+        }),
+        _ => false,
+    })
+}
+
+/// Check if parsed word pieces contain unquoted command substitution (needs word splitting).
+fn pieces_need_splitting(pieces: &[word::WordPieceWithSource]) -> bool {
+    pieces.iter().any(|p| {
+        matches!(
+            &p.piece,
+            WordPiece::CommandSubstitution(_) | WordPiece::BackquotedCommandSubstitution(_)
+        )
+    })
 }
 
 /// Simple shell glob pattern matching for case statements.
