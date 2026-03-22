@@ -24,6 +24,7 @@ const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
 /// Flags blocked by prefix match (e.g., sed -i, sed -i.bak, sed -ibak all blocked).
 const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
     ("sed", &["-i", "--in-place"]),
+    ("sort", &["-o", "--output"]),
 ];
 
 /// Flags that trigger sub-command execution on specific commands.
@@ -210,13 +211,16 @@ impl<'a> ValidatorContext<'a> {
         // Validate xargs
         self.validate_xargs(&cmd_name, &string_args)?;
 
+        // Check for sed write commands (w, W) inside sed expressions
+        self.check_sed_write(&cmd_name, &string_args)?;
+
+        // Check argument paths for absolute paths and path traversal
+        for arg in &string_args {
+            self.check_arg_path(arg)?;
+        }
+
         // Validate redirects
         if !redirects.is_empty() {
-            if !self.config.allow_redirects {
-                return Err(
-                    "redirects are not allowed (use --allow-redirects to enable)".to_string()
-                );
-            }
             if pipeline_idx < pipeline_len - 1 {
                 return Err(format!(
                     "redirects on non-final pipeline command '{}' are not supported",
@@ -432,18 +436,37 @@ impl<'a> ValidatorContext<'a> {
         match redirect {
             IoRedirect::File(_, kind, target) => {
                 match kind {
+                    IoFileRedirectKind::DuplicateInput
+                    | IoFileRedirectKind::DuplicateOutput => {
+                        // fd duplication (2>&1, 1>&2, etc.) — always allowed
+                        match target {
+                            IoFileRedirectTarget::Fd(_) | IoFileRedirectTarget::Duplicate(_) => {
+                                return Ok(());
+                            }
+                            _ => {}
+                        }
+                    }
                     IoFileRedirectKind::Write
                     | IoFileRedirectKind::Append
                     | IoFileRedirectKind::Clobber => {
-                        // Output redirects — allowed if --allow-redirects (already checked)
+                        // Output redirects to /dev/null — always allowed
+                        if let IoFileRedirectTarget::Filename(w) = target {
+                            if w.value == "/dev/null" {
+                                return Ok(());
+                            }
+                        }
+                        // Other file writes require --allow-redirects
+                        if !self.config.allow_redirects {
+                            return Err(
+                                "file redirects are not allowed (use --allow-redirects to enable; \
+                                 > /dev/null and fd duplication like 2>&1 are always permitted)"
+                                    .to_string(),
+                            );
+                        }
                     }
                     IoFileRedirectKind::Read
                     | IoFileRedirectKind::ReadAndWrite => {
                         return Err("input redirection is not supported".to_string());
-                    }
-                    IoFileRedirectKind::DuplicateInput
-                    | IoFileRedirectKind::DuplicateOutput => {
-                        return Err("file descriptor duplication is not supported".to_string());
                     }
                 }
                 match target {
@@ -454,7 +477,8 @@ impl<'a> ValidatorContext<'a> {
                         return Err("process substitution is not allowed".to_string());
                     }
                     IoFileRedirectTarget::Fd(_) | IoFileRedirectTarget::Duplicate(_) => {
-                        return Err("file descriptor duplication is not supported".to_string());
+                        // Already handled above for DuplicateInput/DuplicateOutput
+                        return Ok(());
                     }
                 }
             }
@@ -464,8 +488,19 @@ impl<'a> ValidatorContext<'a> {
             IoRedirect::HereString(_, _) => {
                 return Err("here-strings are not supported".to_string());
             }
-            IoRedirect::OutputAndError(_, _) => {
-                return Err("combined stdout/stderr redirection (&> / &>>) is not supported".to_string());
+            IoRedirect::OutputAndError(target, _append) => {
+                // &> /dev/null and &>> /dev/null — always allowed
+                if target.value == "/dev/null" {
+                    return Ok(());
+                }
+                if !self.config.allow_redirects {
+                    return Err(
+                        "file redirects are not allowed (use --allow-redirects to enable; \
+                         > /dev/null and fd duplication like 2>&1 are always permitted)"
+                            .to_string(),
+                    );
+                }
+                self.validate_word(target)?;
             }
         }
         Ok(())
@@ -478,11 +513,6 @@ impl<'a> ValidatorContext<'a> {
         pipeline_len: usize,
         context: &str,
     ) -> Result<(), String> {
-        if !self.config.allow_redirects {
-            return Err(
-                "redirects are not allowed (use --allow-redirects to enable)".to_string()
-            );
-        }
         if pipeline_idx < pipeline_len - 1 {
             return Err(format!(
                 "redirects on non-final pipeline command '{}' are not supported",
@@ -541,11 +571,112 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
+    /// Check for sed `w` and `W` (write) commands inside sed expressions.
+    /// These write to files, bypassing redirect restrictions.
+    fn check_sed_write(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
+        if cmd != "sed" {
+            return Ok(());
+        }
+
+        let mut i = 0;
+        let mut found_script = false;
+        while i < args.len() {
+            let arg = args[i];
+            // Strip surrounding quotes — brush-parser preserves them in Word.value
+            let stripped = strip_quotes(arg);
+            if stripped == "-e" || stripped == "--expression" {
+                // Next arg is a sed expression
+                i += 1;
+                if i < args.len() {
+                    Self::check_sed_expr_for_write(strip_quotes(args[i]))?;
+                    found_script = true;
+                }
+            } else if stripped.starts_with("-e") {
+                // -eEXPR form
+                Self::check_sed_expr_for_write(&stripped[2..])?;
+                found_script = true;
+            } else if stripped == "-f" || stripped == "--file" {
+                // -f FILE — skip the file argument
+                i += 1;
+                found_script = true;
+            } else if stripped.starts_with('-') {
+                // Other flags (e.g., -n, --quiet, etc.)
+            } else if !found_script {
+                // First non-flag, non-option argument is the sed script
+                Self::check_sed_expr_for_write(&stripped)?;
+                found_script = true;
+            }
+            i += 1;
+        }
+
+        Ok(())
+    }
+
+    /// Check a single sed expression for `w` or `W` (write) commands.
+    fn check_sed_expr_for_write(expr: &str) -> Result<(), String> {
+        // Split on ';' and newlines to handle multi-command sed scripts
+        for segment in expr.split(|c: char| c == ';' || c == '\n') {
+            let trimmed = segment.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Strip leading address: digits, commas, ~, $, spaces,
+            // and /regex/ delimiters
+            let cmd_part = strip_sed_address(trimmed);
+            // Check for w or W command (write to file)
+            if cmd_part.starts_with('w') || cmd_part.starts_with('W') {
+                let rest = &cmd_part[1..];
+                if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('/') {
+                    return Err(format!(
+                        "'{}' command in sed expression writes to a file and is not allowed",
+                        &cmd_part[..1]
+                    ));
+                }
+            }
+            // Also check s/pattern/replacement/ with w flag: s/p/r/w file
+            if cmd_part.starts_with('s') && cmd_part.len() > 1 {
+                let delim = cmd_part.as_bytes()[1];
+                if let Some(flags_start) = find_s_command_flags(cmd_part, delim) {
+                    let flags = &cmd_part[flags_start..];
+                    if flags.contains('w') || flags.contains('W') {
+                        return Err(
+                            "'w' flag on sed s command writes to a file and is not allowed".to_string()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate a sub-command's flags and recursively check for nested -exec/xargs.
     fn validate_sub_command_flags(&self, sub_cmd: &str, sub_args: &[&str], context: &str) -> Result<(), String> {
         self.check_blocked_flags(sub_cmd, sub_args, Some(context))?;
         self.validate_exec_flags(sub_cmd, sub_args)?;
         self.validate_xargs(sub_cmd, sub_args)?;
+        self.check_sed_write(sub_cmd, sub_args)?;
+        Ok(())
+    }
+
+    /// Check a regular command argument for absolute paths and path traversal.
+    /// Operates on raw Word.value strings (may include quotes).
+    fn check_arg_path(&self, arg: &str) -> Result<(), String> {
+        let stripped = strip_quotes(arg);
+        if stripped.starts_with('-') {
+            return Ok(());
+        }
+        if stripped.starts_with('/') && !self.config.allow_absolute {
+            return Err(format!(
+                "absolute path '{}' in argument not allowed (use --allow-absolute)",
+                stripped
+            ));
+        }
+        if stripped.split('/').any(|seg| seg == "..") {
+            return Err(format!(
+                "path traversal ('..') in argument '{}' not allowed",
+                stripped
+            ));
+        }
         Ok(())
     }
 
@@ -661,5 +792,111 @@ impl<'a> ValidatorContext<'a> {
             );
         }
         Ok(())
+    }
+}
+
+/// Strip surrounding quotes from a Word.value (brush-parser preserves them).
+fn strip_quotes(s: &str) -> &str {
+    if s.len() >= 2 {
+        if (s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\''))
+        {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Strip a leading sed address (line numbers, ranges, /regex/) to get the command character.
+fn strip_sed_address(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    // Parse up to two addresses separated by comma
+    for _addr in 0..2 {
+        if i >= bytes.len() {
+            return &s[i..];
+        }
+        match bytes[i] {
+            b'0'..=b'9' => {
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            b'$' => {
+                i += 1;
+            }
+            b'/' => {
+                // /regex/ — skip to closing /
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'/' {
+                    if bytes[i] == b'\\' {
+                        i += 1; // skip escaped char
+                    }
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1; // skip closing /
+                }
+            }
+            b'\\' => {
+                // \cregexc — custom delimiter
+                i += 1;
+                if i < bytes.len() {
+                    let delim = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != delim {
+                        if bytes[i] == b'\\' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        i += 1;
+                    }
+                }
+            }
+            _ => break,
+        }
+        // Check for comma (address range separator)
+        if i < bytes.len() && bytes[i] == b',' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    // Skip optional whitespace between address and command
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+
+    &s[i..]
+}
+
+/// Find the flags portion of a sed s/pattern/replacement/flags command.
+/// Returns the byte offset where flags begin, or None if the s command is malformed.
+fn find_s_command_flags(s: &str, delim: u8) -> Option<usize> {
+    let bytes = s.as_bytes();
+    // s + delim + pattern + delim + replacement + delim + flags
+    // Start after 's' and first delimiter
+    let mut i = 2; // skip 's' and delimiter
+    let mut delim_count = 0;
+
+    while i < bytes.len() && delim_count < 2 {
+        if bytes[i] == b'\\' {
+            i += 2; // skip escaped char
+            continue;
+        }
+        if bytes[i] == delim {
+            delim_count += 1;
+        }
+        i += 1;
+    }
+
+    if delim_count == 2 {
+        Some(i)
+    } else {
+        None
     }
 }

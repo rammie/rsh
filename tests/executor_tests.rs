@@ -687,3 +687,232 @@ fn test_xargs_find_exec_sed_inplace_blocked() {
     assert!(stderr.contains("-i"), "stderr was: {}", stderr);
     assert!(stderr.contains("sed"), "stderr was: {}", stderr);
 }
+
+// ─── Sandbox escape regression tests ───
+
+// --- sed w (file write bypass) ---
+
+#[test]
+fn test_sed_w_command_blocked() {
+    let output = rsh_bin()
+        .arg(r#"echo test | sed "w /tmp/out""#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sed_w_single_quoted_blocked() {
+    let output = rsh_bin()
+        .arg("echo test | sed 'w /tmp/out'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sed_address_w_blocked() {
+    let output = rsh_bin()
+        .arg(r#"echo test | sed "1w /tmp/out""#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sed_e_w_blocked() {
+    let output = rsh_bin()
+        .arg(r#"echo test | sed -e "w /tmp/out""#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sed_s_w_flag_blocked() {
+    // sed s/pattern/replacement/w writes matches to a file
+    let output = rsh_bin()
+        .arg(r#"echo hello | sed "s/hello/world/w /tmp/out""#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sed_normal_substitution_allowed() {
+    let output = rsh_bin()
+        .arg(r#"echo hello | sed "s/hello/world/""#)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "world");
+}
+
+#[test]
+fn test_sed_word_containing_w_allowed() {
+    // 's/www/xxx/' should not be flagged — the w is inside the pattern, not a command
+    let output = rsh_bin()
+        .arg(r#"echo www | sed "s/www/xxx/""#)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "xxx");
+}
+
+#[test]
+fn test_find_exec_sed_w_blocked() {
+    let output = rsh_bin()
+        .arg("--inherit-env")
+        .arg(r#"find . -exec sed "w /tmp/out" {} ;"#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
+}
+
+// --- sort -o / --output (file write bypass) ---
+
+#[test]
+fn test_sort_o_blocked() {
+    let output = rsh_bin()
+        .arg("echo test | sort -o out.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("sort"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sort_output_long_flag_blocked() {
+    let output = rsh_bin()
+        .arg("echo test | sort --output=out.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("sort"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_sort_normal_usage_allowed() {
+    let output = rsh_bin()
+        .arg("echo -e 'b\na\nc' | sort")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+// --- Tilde/variable expansion path traversal bypass ---
+
+#[test]
+fn test_tilde_path_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("cat ~/../../etc/hosts")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "tilde+traversal should be blocked");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+        "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_variable_expansion_path_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("cat $HOME/../../etc/hosts")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "$HOME+traversal should be blocked");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+        "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_double_quoted_variable_path_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg("/tmp")
+        .arg(r#"cat "$HOME/../../etc/hosts""#)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "quoted $HOME+traversal should be blocked");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+        "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_for_loop_tilde_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("for f in ~/../../etc/hosts; do cat $f; done")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "for-loop tilde+traversal should be blocked");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+        "stderr was: {}", stderr);
+}
+
+// --- /dev/null and fd duplication always allowed ---
+
+#[test]
+fn test_redirect_to_dev_null_allowed_without_flag() {
+    let output = rsh_bin()
+        .arg("echo hello > /dev/null")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    // stdout should be empty since it was redirected to /dev/null
+    assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+}
+
+#[test]
+fn test_stderr_to_dev_null_allowed() {
+    let output = rsh_bin()
+        .arg("echo hello 2>/dev/null")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn test_fd_duplication_allowed_without_flag() {
+    let output = rsh_bin()
+        .arg("echo hello 2>&1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_redirect_to_real_file_still_blocked_without_flag() {
+    let output = rsh_bin()
+        .arg("echo hello > /tmp/out.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("redirect") || stderr.contains("not allowed"),
+        "stderr was: {}", stderr);
+}

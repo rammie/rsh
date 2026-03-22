@@ -466,10 +466,11 @@ impl Executor {
         for item in prefix_items.chain(suffix_items) {
             match item {
                 CommandPrefixOrSuffixItem::Word(w) => {
-                    if self.word_is_literal(&w.value) {
-                        self.check_arg_path(&w.value)?;
+                    let expanded = self.expand_word(w, local_vars)?;
+                    for arg in &expanded {
+                        self.check_expanded_arg_path(arg)?;
                     }
-                    args.extend(self.expand_word(w, local_vars)?);
+                    args.extend(expanded);
                 }
                 CommandPrefixOrSuffixItem::IoRedirect(r) => {
                     redirects.extend(self.extract_redirect(r, local_vars)?);
@@ -740,16 +741,6 @@ impl Executor {
         Ok(vec![expanded])
     }
 
-    /// Check if a word is literal (no variable references, command substitutions, etc.)
-    fn word_is_literal(&self, raw: &str) -> bool {
-        let opts = ParserOptions::default();
-        let pieces = match word::parse(raw, &opts) {
-            Ok(p) => p,
-            Err(_) => return true,
-        };
-        pieces_are_literal(&pieces)
-    }
-
     /// Expand a parsed word piece list into a single string.
     fn expand_pieces(
         &self,
@@ -940,15 +931,13 @@ impl Executor {
 
     // --- Path checking ---
 
-    fn check_arg_path(&self, arg: &str) -> Result<(), String> {
+    /// Check expanded argument values for path traversal.
+    /// Only checks for '..' traversal, not absolute paths — variable/tilde expansion
+    /// legitimately produces absolute paths (e.g., $HOME -> /Users/foo), and the
+    /// absolute path check on raw literal values is handled by the validator.
+    fn check_expanded_arg_path(&self, arg: &str) -> Result<(), String> {
         if arg.starts_with('-') {
             return Ok(());
-        }
-        if arg.starts_with('/') && !self.allow_absolute {
-            return Err(format!(
-                "absolute path '{}' in argument not allowed (use --allow-absolute)",
-                arg
-            ));
         }
         if arg.split('/').any(|seg| seg == "..") {
             return Err(format!(
@@ -967,7 +956,16 @@ impl Executor {
         local_vars: &HashMap<String, String>,
     ) -> Result<Vec<RedirectInfo>, String> {
         match redirect {
-            IoRedirect::File(_, kind, target) => {
+            IoRedirect::File(fd, kind, target) => {
+                // Only handle stdout redirects (fd 1 or unspecified).
+                // fd 2 (stderr) redirects like 2>/dev/null and fd duplication
+                // like 2>&1 are validated but not executed post-hoc — rsh
+                // captures stdout/stderr separately via Stdio::piped().
+                if let Some(fd_num) = fd {
+                    if *fd_num != 1 {
+                        return Ok(Vec::new());
+                    }
+                }
                 let redir_kind = match kind {
                     IoFileRedirectKind::Write | IoFileRedirectKind::Clobber => {
                         RedirectKindSimple::Overwrite
@@ -1002,6 +1000,11 @@ impl Executor {
 
     fn apply_redirects(&self, stdout: &str, redirects: &[RedirectInfo]) -> Result<String, String> {
         for redirect in redirects {
+            // /dev/null — just discard the output
+            if redirect.target == "/dev/null" {
+                return Ok(String::new());
+            }
+
             let path = if redirect.target.starts_with('/') {
                 if !self.allow_absolute {
                     return Err(format!(
@@ -1082,17 +1085,6 @@ enum RedirectKindSimple {
 /// Check if parsed word pieces contain unquoted glob characters.
 fn pieces_have_unquoted_glob(pieces: &[word::WordPieceWithSource]) -> bool {
     pieces.iter().any(|p| matches!(&p.piece, WordPiece::Text(s) if rsh_glob::is_glob(s)))
-}
-
-/// Check if parsed word pieces are all literal (no expansions).
-fn pieces_are_literal(pieces: &[word::WordPieceWithSource]) -> bool {
-    pieces.iter().all(|p| match &p.piece {
-        WordPiece::Text(_) | WordPiece::SingleQuotedText(_) | WordPiece::EscapeSequence(_) => true,
-        WordPiece::DoubleQuotedSequence(inner) => inner.iter().all(|ip| {
-            matches!(&ip.piece, WordPiece::Text(_) | WordPiece::EscapeSequence(_))
-        }),
-        _ => false,
-    })
 }
 
 /// Check if parsed word pieces contain unquoted command substitution (needs word splitting).
