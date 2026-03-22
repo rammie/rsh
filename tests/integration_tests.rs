@@ -730,11 +730,9 @@ fn test_redirect_pipeline_to_file() {
 
 #[test]
 fn test_fast_command_within_timeout() {
-    // A fast command should complete well within the timeout
+    // A fast command should complete quickly
     let output = rsh_bin()
         .arg("--inherit-env")
-        .arg("--timeout")
-        .arg("5")
         .arg("--dir")
         .arg(env!("CARGO_MANIFEST_DIR"))
         .arg("echo fast")

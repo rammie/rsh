@@ -318,28 +318,7 @@ fn test_double_quoted_unapproved_var_rejected_at_validate() {
     assert!(stderr.contains("SECRET_KEY"), "stderr was: {}", stderr);
 }
 
-// --- S5: execution timeout ---
-#[test]
-fn test_timeout() {
-    // Use a 1-second timeout with a command that would hang
-    let start = std::time::Instant::now();
-    let output = rsh_bin()
-        .arg("--timeout")
-        .arg("1")
-        .arg("--allow")
-        .arg("sleep")
-        .arg("--inherit-env")
-        .arg("sleep 60")
-        .output()
-        .unwrap();
-    let elapsed = start.elapsed();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("timed out"), "stderr was: {}", stderr);
-    assert!(elapsed.as_secs() < 10, "took too long: {:?}", elapsed);
-}
-
-// --- S6: environment sanitization ---
+// --- S5: environment sanitization ---
 #[test]
 fn test_env_sanitized_by_default() {
     // Set a custom env var and verify the child can't see it

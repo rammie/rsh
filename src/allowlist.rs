@@ -10,8 +10,20 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 const DEFAULT_ALLOWLIST: &[&str] = &[
-    "grep", "rg", "ugrep", "find", "fd", "cat", "bat", "head", "tail",
-    "ls", "eza", "wc", "echo", "stat", "pwd",
+    // Search
+    "grep", "rg", "ugrep",
+    // Find files
+    "find", "fd",
+    // Read files
+    "cat", "bat", "head", "tail", "less",
+    // List/inspect
+    "ls", "eza", "stat", "file", "du", "wc", "pwd", "which",
+    // Text processing (read-only — sed -i is blocked separately)
+    "sort", "uniq", "cut", "tr", "sed", "diff", "comm",
+    // Path utilities
+    "basename", "dirname", "realpath",
+    // Misc
+    "echo", "date", "true", "false", "test", "xargs",
 ];
 
 /// Environment variables approved for use in command arguments and expansion.

@@ -21,6 +21,11 @@ const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
     ("find", &["-delete", "-ok", "-okdir"]),
 ];
 
+/// Flags blocked by prefix match (e.g., sed -i, sed -i.bak, sed -ibak all blocked).
+const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
+    ("sed", &["-i", "--in-place"]),
+];
+
 /// Flags that trigger sub-command execution on specific commands.
 const EXEC_FLAGS: &[(&str, &[&str])] = &[
     ("find", &["-exec", "-execdir"]),
@@ -196,11 +201,25 @@ impl<'a> ValidatorContext<'a> {
         // Extract plain string values for flag-based validation
         let string_args: Vec<&str> = arg_words.iter().map(|w| w.value.as_str()).collect();
 
-        // Check unconditionally blocked flags
+        // Check unconditionally blocked flags (exact match)
         if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
             for val in &string_args {
                 if blocked_flags.contains(val) {
                     return Err(format!("'{}' flag on '{}' is not allowed", val, cmd_name));
+                }
+            }
+        }
+
+        // Check prefix-blocked flags (e.g., sed -i, -i.bak, -ibak all blocked)
+        if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
+            for val in &string_args {
+                for prefix in *blocked_prefixes {
+                    if val.starts_with(prefix) {
+                        return Err(format!(
+                            "'{}' flag on '{}' is not allowed (writes files in place)",
+                            val, cmd_name
+                        ));
+                    }
                 }
             }
         }

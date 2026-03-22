@@ -5,7 +5,6 @@ use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
@@ -15,28 +14,32 @@ use crate::allowlist::{self, Allowlist};
 use crate::glob as rsh_glob;
 use crate::validator::{self, ValidatorConfig};
 
-/// Wait for a child process with a deadline. Kills the child if the deadline passes.
-fn wait_with_deadline(
-    mut child: std::process::Child,
-    deadline: Instant,
-) -> Result<std::process::Output, String> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child
-                    .wait_with_output()
-                    .map_err(|e| format!("failed to read output: {}", e));
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("command timed out".to_string());
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => return Err(format!("error waiting for process: {}", e)),
+/// Extract exit code from a process status, mapping signal death to 128 + signal (bash convention).
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
         }
+    }
+    status.code().unwrap_or(1)
+}
+
+/// Ignore SIGINT in the current process (children still receive it from the terminal).
+/// This matches bash behavior: the shell waits for the child to finish, then checks its exit status.
+fn ignore_sigint() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+    }
+}
+
+/// Restore default SIGINT handling.
+fn restore_sigint() {
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
     }
 }
 
@@ -75,7 +78,6 @@ pub struct Executor {
     allow_absolute: bool,
     allow_redirects: bool,
     max_output: usize,
-    timeout: Duration,
     inherit_env: bool,
     approved_vars: HashSet<String>,
 }
@@ -87,7 +89,6 @@ impl Executor {
         allow_absolute: bool,
         allow_redirects: bool,
         max_output: usize,
-        timeout_secs: u64,
         inherit_env: bool,
     ) -> Self {
         let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
@@ -97,7 +98,6 @@ impl Executor {
             allow_absolute,
             allow_redirects,
             max_output,
-            timeout: Duration::from_secs(timeout_secs),
             inherit_env,
             approved_vars,
         }
@@ -114,11 +114,16 @@ impl Executor {
             return Output::error(e);
         }
 
+        // Ignore SIGINT while children run (bash behavior: the shell waits for
+        // the child to finish, then inspects its exit status).
+        ignore_sigint();
+
         let mut local_vars: HashMap<String, String> = HashMap::new();
         let (mut all_stdout, mut all_stderr, last_exit_code) =
             match self.execute_program(program, &mut local_vars) {
                 Ok(result) => result,
                 Err(e) => {
+                    restore_sigint();
                     return Output {
                         stdout: String::new(),
                         stderr: format!("rsh: {}\n", e),
@@ -137,6 +142,8 @@ impl Executor {
             all_stderr.truncate(floor_char_boundary(&all_stderr, stderr_limit));
             all_stderr.push_str("rsh: output truncated (exceeded limit)\n");
         }
+
+        restore_sigint();
 
         Output {
             stdout: all_stdout,
@@ -331,20 +338,21 @@ impl Executor {
             }
         }
 
-        // Collect output from all children with shared deadline
-        let deadline = Instant::now() + self.timeout;
+        // Collect output from all children
         let mut all_stderr = String::new();
         let last = child_processes.len() - 1;
         let mut final_stdout = String::new();
         let mut final_exit_code = 0;
 
         for (i, child) in child_processes.into_iter().enumerate() {
-            let output = wait_with_deadline(child, deadline)?;
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("failed to read output: {}", e))?;
             all_stderr.push_str(&String::from_utf8_lossy(&output.stderr));
 
             if i == last {
                 final_stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                final_exit_code = output.status.code().unwrap_or(1);
+                final_exit_code = exit_code(output.status);
 
                 // Handle redirects on last command
                 let redirects = &cmd_infos[last];
@@ -423,12 +431,13 @@ impl Executor {
             }
         }
 
-        let deadline = Instant::now() + self.timeout;
-        let output = wait_with_deadline(child, deadline)?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("failed to read output: {}", e))?;
 
         let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(1);
+        let exit_code = exit_code(output.status);
 
         if !redirects.is_empty() {
             stdout = self.apply_redirects(&stdout, &redirects)?;

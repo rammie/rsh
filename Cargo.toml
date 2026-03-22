@@ -8,6 +8,7 @@ description = "Restricted shell for AI agents — safe, auditable command execut
 glob = "0.3"
 os_pipe = "1"
 brush-parser = "0.3"
+libc = "0.2"
 
 [[test]]
 name = "parser_tests"

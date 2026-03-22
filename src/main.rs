@@ -3,7 +3,42 @@ mod executor;
 mod glob;
 mod validator;
 
+use allowlist::Allowlist;
 use executor::Executor;
+
+fn prime(al: &Allowlist, allow_redirects: bool, allow_absolute: bool) {
+    let cmds = al.allowed_commands().join(", ");
+    print!("\
+Use rsh for read-only shell operations. rsh works like bash but only permits specific commands.
+
+Usage: rsh -c \"<command>\"
+
+Allowed commands: {cmds}
+
+Supported syntax:
+- Pipelines: grep TODO src/*.rs | wc -l
+- Boolean operators: grep -q TODO file && echo found
+- Loops: for f in *.rs; do wc -l \"$f\"; done
+- Conditionals: if grep -q TODO src/main.rs; then echo found; fi
+- Command substitution: wc -l $(find src -name '*.rs')
+- Globs, quoted strings, semicolons, case statements
+
+Not allowed:
+- awk (use cut, sed, or grep instead — awk can execute arbitrary commands)
+- Commands outside the allowlist above
+- Function definitions, background execution (&), process substitution
+- Path traversal (..) in arguments{absolute_note}{redirect_note}
+
+Behavior:
+- stdout, stderr, and exit codes work exactly like bash
+- Rejected commands print an error to stderr and exit 1
+- Environment is sanitized (only HOME, PATH, PWD, etc. are visible)
+",
+        absolute_note = if allow_absolute { "" } else { "\n- Absolute paths in arguments (use relative paths)" },
+        redirect_note = if allow_redirects { "" } else { "\n- File output redirects (> and >>)" },
+    );
+    std::process::exit(0);
+}
 
 fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
@@ -13,9 +48,9 @@ fn usage() {
     eprintln!("  --allow-absolute    Allow absolute paths in arguments, globs, and redirects");
     eprintln!("  --allow-redirects   Allow output redirects (> and >>)");
     eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
-    eprintln!("  --timeout <secs>    Execution timeout in seconds (default: 30)");
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
     eprintln!("  --dir <path>        Working directory (default: cwd)");
+    eprintln!("  --prime             Print an LLM-ready description of rsh's capabilities");
     eprintln!("  --help              Show this help");
     eprintln!();
     eprintln!("Trust model:");
@@ -37,15 +72,18 @@ fn main() {
     let mut allow_absolute = false;
     let mut allow_redirects = false;
     let mut max_output: usize = 10 * 1024 * 1024; // 10MB
-    let mut timeout_secs: u64 = 30;
     let mut inherit_env = false;
     let mut working_dir: Option<String> = None;
     let mut command_string: Option<String> = None;
+    let mut show_prime = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--help" | "-h" => usage(),
+            "--prime" => {
+                show_prime = true;
+            }
             "--allow" => {
                 i += 1;
                 if i >= args.len() {
@@ -68,17 +106,6 @@ fn main() {
                 }
                 max_output = args[i].parse().unwrap_or_else(|_| {
                     eprintln!("error: --max-output must be a positive integer");
-                    std::process::exit(2);
-                });
-            }
-            "--timeout" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("error: --timeout requires a value");
-                    std::process::exit(2);
-                }
-                timeout_secs = args[i].parse().unwrap_or_else(|_| {
-                    eprintln!("error: --timeout must be a positive integer");
                     std::process::exit(2);
                 });
             }
@@ -113,6 +140,13 @@ fn main() {
         i += 1;
     }
 
+    // Load allowlist (needed for --prime and execution)
+    let al = Allowlist::load(allow_flag.as_deref());
+
+    if show_prime {
+        prime(&al, allow_redirects, allow_absolute);
+    }
+
     let command_string = match command_string {
         Some(s) => s,
         None => {
@@ -145,14 +179,12 @@ fn main() {
     }
 
     // Execute
-    let al = allowlist::Allowlist::load(allow_flag.as_deref());
     let executor = Executor::new(
         al,
         working_dir,
         allow_absolute,
         allow_redirects,
         max_output,
-        timeout_secs,
         inherit_env,
     );
     let output = executor.execute(&program);

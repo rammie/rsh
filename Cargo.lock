@@ -326,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "brush-parser",
  "glob",
+ "libc",
  "os_pipe",
 ]
 

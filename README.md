@@ -16,7 +16,6 @@ rsh closes that gap. It accepts a command string, parses it with [brush-parser](
 - Environment is sanitized — child processes only see safe variables (`HOME`, `PATH`, etc.)
 - Variable references validated — only approved variables permitted (blocks `$SECRET`, `$API_KEY`)
 - Sub-command validation — `find -exec`, `xargs` sub-commands checked against allowlist
-- Commands time out after 30 seconds by default
 - Output is capped at 10MB by default
 
 **What rsh allows:**
@@ -77,8 +76,6 @@ rsh --allow "grep,cat,head,wc" "grep TODO src/*.rs | wc -l"
 # Enable file output
 rsh --allow-redirects --dir /tmp "echo hello >> output.txt"
 
-# Longer timeout for slow commands
-rsh --timeout 120 "find . -name '*.log'"
 ```
 
 ### Output format
@@ -108,15 +105,17 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 | `--allow-absolute` | off | Allow absolute paths in arguments, globs, and redirects |
 | `--allow-redirects` | off | Allow `>` and `>>` output redirects |
 | `--max-output <bytes>` | 10MB | Truncate combined stdout+stderr beyond this limit |
-| `--timeout <secs>` | 30 | Kill commands that exceed this duration |
 | `--inherit-env` | off | Pass full parent environment to child processes |
 | `--dir <path>` | cwd | Set the working directory for command execution |
 
 ### Default allowlist
 
 ```
-grep, rg, ugrep, find, fd, cat, bat, head, tail, ls, eza, wc, echo, stat, pwd
+grep, rg, ugrep, find, fd, cat, bat, head, tail, less, ls, eza, stat, file, du, wc, pwd, which,
+sort, uniq, cut, tr, sed, diff, comm, basename, dirname, realpath, echo, date, true, false, test, xargs
 ```
+
+Note: `sed -i`/`--in-place` is blocked (writes files in place). `find -delete` is blocked. `xargs` sub-commands are validated against the allowlist. `awk` is intentionally excluded — its `system()` function can execute arbitrary commands.
 
 Override with `--allow`, the `RSH_ALLOWLIST` environment variable, or a `~/.rsh/allowlist` config file (one command per line).
 
@@ -134,7 +133,7 @@ rsh is **defense in depth** — multiple independent layers, each sufficient to 
 | **Variable approval** | Only approved env vars (`HOME`, `PATH`, etc.); blocks `$SECRET`, `$API_KEY` |
 | **Sub-command validation** | `find -exec`, `xargs` sub-commands checked against allowlist |
 | **Environment sanitization** | Only approved variables forwarded to child processes |
-| **Execution timeout** | Runaway or hanging commands killed after deadline |
+| **Signal handling** | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |
 | **Output limits** | Truncation prevents memory exhaustion from large output |
 | **Loop limits** | While/until loops capped at 10,000 iterations |
 
