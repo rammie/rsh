@@ -1,53 +1,22 @@
-/// Executor: walks the AST, wires pipes, and spawns processes.
+/// Executor: walks the brush-parser AST, expands words, wires pipes, and spawns processes.
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::allowlist::Allowlist;
-use crate::ast::{self, Arg, Pipeline, Program, RedirectKind};
-use crate::glob as rsh_glob;
+use brush_parser::ast::*;
+use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
+use brush_parser::ParserOptions;
 
-/// The result of executing a program.
+use crate::allowlist::Allowlist;
+use crate::glob as rsh_glob;
+use crate::validator::{self, ValidatorConfig};
+
 fn is_false(v: &bool) -> bool {
     !v
-}
-
-/// Extract variable names referenced in a double-quoted string ($VAR or ${VAR}).
-fn extract_var_names(s: &str) -> Vec<String> {
-    let mut vars = Vec::new();
-    let mut chars = s.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '$' {
-            let mut name = String::new();
-            if chars.peek() == Some(&'{') {
-                chars.next();
-                while let Some(&c) = chars.peek() {
-                    if c == '}' {
-                        chars.next();
-                        break;
-                    }
-                    name.push(c);
-                    chars.next();
-                }
-            } else {
-                while let Some(&c) = chars.peek() {
-                    if c.is_alphanumeric() || c == '_' {
-                        name.push(c);
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if !name.is_empty() {
-                vars.push(name);
-            }
-        }
-    }
-    vars
 }
 
 /// Wait for a child process with a deadline. Kills the child if the deadline passes.
@@ -58,7 +27,8 @@ fn wait_with_deadline(
     loop {
         match child.try_wait() {
             Ok(Some(_)) => {
-                return child.wait_with_output()
+                return child
+                    .wait_with_output()
                     .map_err(|e| format!("failed to read output: {}", e));
             }
             Ok(None) => {
@@ -86,6 +56,12 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
     i
 }
 
+/// Approved environment variables.
+const APPROVED_VARS: &[&str] = &[
+    "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER", "TMPDIR",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+];
+
 #[derive(Debug, serde::Serialize)]
 pub struct Output {
     pub stdout: String,
@@ -110,40 +86,13 @@ impl Output {
     }
 }
 
-/// Flags that are always forbidden on specific commands (destructive or interactive).
-const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
-    ("find", &["-delete", "-ok", "-okdir"]),
-];
-
-/// Flags that trigger sub-command execution on specific commands.
-/// The token immediately after the flag is the sub-command name and must be in the allowlist.
-const EXEC_FLAGS: &[(&str, &[&str])] = &[
-    ("find", &["-exec", "-execdir"]),
-    ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
-];
-
-/// xargs flags that consume the next token as their value.
-const XARGS_FLAGS_WITH_ARG: &[&str] = &[
-    "-I", "-L", "-n", "-P", "-s", "-d", "-E", "-J", "-R",
-];
-
-/// xargs flags that are always blocked (interactive / dangerous).
-const XARGS_BLOCKED_FLAGS: &[&str] = &["-p", "--interactive"];
-
-/// Approved environment variables that can be referenced.
-const APPROVED_VARS: &[&str] = &[
-    "HOME", "USER", "PATH", "PWD", "LANG", "TERM",
-    "SHELL", "EDITOR", "PAGER", "TMPDIR", "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME", "XDG_CACHE_HOME",
-];
-
 pub struct Executor {
     allowlist: Allowlist,
     working_dir: std::path::PathBuf,
     allow_absolute: bool,
     allow_redirects: bool,
     max_output: usize,
-    timeout: std::time::Duration,
+    timeout: Duration,
     inherit_env: bool,
     approved_vars: HashSet<String>,
 }
@@ -165,340 +114,54 @@ impl Executor {
             allow_absolute,
             allow_redirects,
             max_output,
-            timeout: std::time::Duration::from_secs(timeout_secs),
+            timeout: Duration::from_secs(timeout_secs),
             inherit_env,
             approved_vars,
         }
     }
 
-    /// Configure environment variables on a Command builder.
-    fn configure_env(&self, process: &mut Command) {
-        if !self.inherit_env {
-            process.env_clear();
-            for var in &self.approved_vars {
-                if let Ok(val) = std::env::var(var) {
-                    process.env(var, val);
-                }
-            }
-        }
-    }
-
-    /// Extract string values from command args, skipping variable references.
-    fn string_args(cmd: &ast::Command) -> Vec<&str> {
-        cmd.args.iter().filter_map(|a| match a {
-            Arg::Bare(s) | Arg::SingleQuoted(s) | Arg::DoubleQuoted(s) => Some(s.as_str()),
-            Arg::Var(_) => None,
-        }).collect()
-    }
-
-    /// Check that a sub-command name is a bare allowlisted command.
-    fn check_sub_command(&self, sub_cmd: &str, context: &str) -> Result<(), String> {
-        if sub_cmd.contains('/') || sub_cmd.contains('\\') || sub_cmd.starts_with('.') {
-            return Err(format!(
-                "sub-command '{}' in '{}' must be a bare command name, not a path",
-                sub_cmd, context
-            ));
-        }
-        if !self.allowlist.is_allowed(sub_cmd) {
-            return Err(format!(
-                "sub-command '{}' in '{}' not in allowlist (allowed: {})",
-                sub_cmd, context, self.allowlist.allowed_commands().join(", ")
-            ));
-        }
-        Ok(())
-    }
-
-    /// Check a sub-command argument for path traversal and absolute paths.
-    fn check_sub_arg_path(&self, arg: &str, context: &str) -> Result<(), String> {
-        if arg.split('/').any(|seg| seg == "..") {
-            return Err(format!(
-                "path traversal ('..') in {} sub-command argument '{}' not allowed",
-                context, arg
-            ));
-        }
-        if arg.starts_with('/') && !self.allow_absolute {
-            return Err(format!(
-                "absolute path '{}' in {} sub-command not allowed (use --allow-absolute)",
-                arg, context
-            ));
-        }
-        Ok(())
-    }
-
-    /// Validate -exec/-execdir style flags: the sub-command must be in the allowlist.
-    fn validate_exec_flags(&self, cmd: &ast::Command) -> Result<(), String> {
-        let exec_flags: &[&str] = match EXEC_FLAGS.iter().find(|(c, _)| *c == cmd.name) {
-            Some((_, flags)) => flags,
-            None => return Ok(()),
-        };
-
-        let args = Self::string_args(cmd);
-        let mut i = 0;
-        while i < args.len() {
-            if exec_flags.contains(&args[i]) {
-                let flag = args[i];
-                i += 1;
-
-                if i >= args.len() {
-                    return Err(format!(
-                        "'{}' on '{}' requires a command argument",
-                        flag, cmd.name
-                    ));
-                }
-
-                let context = format!("{} {}", cmd.name, flag);
-                self.check_sub_command(args[i], &context)?;
-
-                i += 1;
-                while i < args.len() {
-                    if matches!(args[i], ";" | "+" | "{}") {
-                        break;
-                    }
-                    self.check_sub_arg_path(args[i], &context)?;
-                    i += 1;
-                }
-            }
-            i += 1;
-        }
-
-        Ok(())
-    }
-
-    /// Validate xargs: the sub-command (first positional arg) must be in the allowlist.
-    fn validate_xargs(&self, cmd: &ast::Command) -> Result<(), String> {
-        if cmd.name != "xargs" {
-            return Ok(());
-        }
-
-        let args = Self::string_args(cmd);
-        let mut i = 0;
-
-        // Skip xargs flags to find the sub-command (first positional arg)
-        while i < args.len() {
-            let a = args[i];
-
-            if XARGS_BLOCKED_FLAGS.contains(&a) {
-                return Err(format!("'{}' flag on 'xargs' is not allowed", a));
-            }
-
-            if XARGS_FLAGS_WITH_ARG.contains(&a) {
-                i += 2;
-                continue;
-            }
-
-            // Short flags: combined like -I{} or clustered like -0rt
-            if a.starts_with('-') && a.len() > 1 && !a.starts_with("--") {
-                if XARGS_FLAGS_WITH_ARG.contains(&&a[0..2]) {
-                    i += 1; // value is part of the token (e.g., -I{})
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            if a.starts_with("--") {
-                i += 1;
-                continue;
-            }
-
-            // First positional argument is the sub-command
-            self.check_sub_command(a, "xargs")?;
-
-            i += 1;
-            while i < args.len() {
-                self.check_sub_arg_path(args[i], "xargs")?;
-                i += 1;
-            }
-            return Ok(());
-        }
-
-        // No sub-command found — xargs defaults to echo
-        if !self.allowlist.is_allowed("echo") {
-            return Err(
-                "xargs with no sub-command defaults to 'echo', which is not in the allowlist".to_string()
-            );
-        }
-        Ok(())
-    }
-
-    /// Validate the program before execution. Returns all command names and any error.
-    fn validate(&self, program: &Program) -> Result<Vec<String>, String> {
-        let mut command_names = Vec::new();
-        for pipeline in &program.pipelines {
-            let last_idx = pipeline.commands.len() - 1;
-            for (cmd_idx, cmd) in pipeline.commands.iter().enumerate() {
-                command_names.push(cmd.name.clone());
-                if !self.allowlist.is_allowed(&cmd.name) {
-                    return Err(format!(
-                        "command '{}' not in allowlist (allowed: {})",
-                        cmd.name,
-                        self.allowlist.allowed_commands().join(", ")
-                    ));
-                }
-                // Validate xargs sub-command against allowlist
-                self.validate_xargs(cmd)?;
-
-                // Check for unconditionally blocked flags (destructive/interactive)
-                if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd.name) {
-                    for val in Self::string_args(cmd) {
-                        if blocked_flags.contains(&val) {
-                            return Err(format!(
-                                "'{}' flag on '{}' is not allowed",
-                                val, cmd.name
-                            ));
-                        }
-                    }
-                }
-
-                // Validate sub-command execution flags (-exec, --exec, etc.)
-                // The token after the flag is the sub-command name — check it
-                // against the allowlist.
-                self.validate_exec_flags(cmd)?;
-                // Validate redirects are allowed
-                if !cmd.redirects.is_empty() && !self.allow_redirects {
-                    return Err(
-                        "redirects are not allowed (use --allow-redirects to enable)".to_string()
-                    );
-                }
-                if !cmd.redirects.is_empty() && cmd_idx < last_idx {
-                    return Err(format!(
-                        "redirects on non-final pipeline command '{}' are not supported",
-                        cmd.name
-                    ));
-                }
-                // Validate variable references
-                for arg in &cmd.args {
-                    match arg {
-                        Arg::Var(name) => {
-                            if !self.approved_vars.contains(name.as_str()) {
-                                return Err(format!(
-                                    "variable '{}' not in approved list (approved: {})",
-                                    name,
-                                    APPROVED_VARS.join(", ")
-                                ));
-                            }
-                        }
-                        Arg::DoubleQuoted(s) => {
-                            for var_name in extract_var_names(s) {
-                                if !self.approved_vars.contains(var_name.as_str()) {
-                                    return Err(format!(
-                                        "variable '{}' not in approved list (approved: {})",
-                                        var_name,
-                                        APPROVED_VARS.join(", ")
-                                    ));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        Ok(command_names)
-    }
-
-    /// Expand an argument into one or more string values.
-    fn expand_arg(&self, arg: &Arg) -> Result<Vec<String>, String> {
-        match arg {
-            Arg::Bare(s) => {
-                if rsh_glob::is_glob(s) {
-                    rsh_glob::expand_glob(s, &self.working_dir, self.allow_absolute)
-                } else {
-                    Ok(vec![s.clone()])
-                }
-            }
-            Arg::SingleQuoted(s) => Ok(vec![s.clone()]),
-            Arg::DoubleQuoted(s) => {
-                // For double-quoted strings, expand embedded $VAR references
-                Ok(vec![self.expand_vars_in_string(s)?])
-            }
-            Arg::Var(name) => {
-                if !self.approved_vars.contains(name.as_str()) {
-                    return Err(format!("variable '{}' not in approved list", name));
-                }
-                Ok(vec![std::env::var(name).unwrap_or_default()])
-            }
-        }
-    }
-
-    fn expand_vars_in_string(&self, s: &str) -> Result<String, String> {
-        let mut result = String::new();
-        let mut chars = s.chars().peekable();
-        while let Some(ch) = chars.next() {
-            if ch == '$' {
-                let mut var_name = String::new();
-                if chars.peek() == Some(&'{') {
-                    chars.next(); // consume {
-                    while let Some(&c) = chars.peek() {
-                        if c == '}' {
-                            chars.next();
-                            break;
-                        }
-                        var_name.push(c);
-                        chars.next();
-                    }
-                } else {
-                    while let Some(&c) = chars.peek() {
-                        if c.is_alphanumeric() || c == '_' {
-                            var_name.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                if !var_name.is_empty() {
-                    if !self.approved_vars.contains(var_name.as_str()) {
-                        return Err(format!("variable '{}' not in approved list", var_name));
-                    }
-                    result.push_str(&std::env::var(&var_name).unwrap_or_default());
-                } else {
-                    result.push('$');
-                }
-            } else {
-                result.push(ch);
-            }
-        }
-        Ok(result)
-    }
-
-    /// Execute a full program.
+    /// Execute a validated brush-parser Program.
     pub fn execute(&self, program: &Program) -> Output {
-        let command_names = match self.validate(program) {
+        // Validate first
+        let config = ValidatorConfig {
+            allow_redirects: self.allow_redirects,
+            allow_absolute: self.allow_absolute,
+        };
+        let command_names = match validator::validate(program, &self.allowlist, &config) {
             Ok(names) => names,
             Err(e) => return Output::error(e),
         };
 
+        let mut local_vars: HashMap<String, String> = HashMap::new();
         let mut all_stdout = String::new();
         let mut all_stderr = String::new();
-        let mut last_exit_code = 0;
+        let last_exit_code;
 
-        for pipeline in &program.pipelines {
-            match self.execute_pipeline(pipeline) {
-                Ok((stdout, stderr, code)) => {
-                    all_stdout.push_str(&stdout);
-                    all_stderr.push_str(&stderr);
-                    last_exit_code = code;
-                }
-                Err(e) => {
-                    return Output {
-                        stdout: all_stdout,
-                        stderr: all_stderr,
-                        exit_code: 1,
-                        commands: command_names,
-                        error: Some(e),
-                        truncated: false,
-                    };
-                }
+        match self.execute_program(program, &mut local_vars) {
+            Ok((stdout, stderr, code)) => {
+                all_stdout = stdout;
+                all_stderr = stderr;
+                last_exit_code = code;
+            }
+            Err(e) => {
+                return Output {
+                    stdout: all_stdout,
+                    stderr: all_stderr,
+                    exit_code: 1,
+                    commands: command_names,
+                    error: Some(e),
+                    truncated: false,
+                };
             }
         }
 
+        // Truncate if needed
         let mut truncated = false;
         let total = all_stdout.len() + all_stderr.len();
         if self.max_output > 0 && total > self.max_output {
             truncated = true;
-            // Truncate proportionally
-            let stdout_limit = (self.max_output as f64 * (all_stdout.len() as f64 / total as f64)) as usize;
+            let stdout_limit =
+                (self.max_output as f64 * (all_stdout.len() as f64 / total as f64)) as usize;
             let stderr_limit = self.max_output.saturating_sub(stdout_limit);
             all_stdout.truncate(floor_char_boundary(&all_stdout, stdout_limit));
             all_stderr.truncate(floor_char_boundary(&all_stderr, stderr_limit));
@@ -514,22 +177,162 @@ impl Executor {
         }
     }
 
-    fn execute_pipeline(&self, pipeline: &Pipeline) -> Result<(String, String, i32), String> {
-        let commands = &pipeline.commands;
+    // --- Execution tree ---
 
-        if commands.len() == 1 {
-            return self.execute_single_command(&commands[0]);
+    fn execute_program(
+        &self,
+        program: &Program,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+        let mut last_exit_code = 0;
+
+        for complete_command in &program.complete_commands {
+            let (stdout, stderr, code) =
+                self.execute_compound_list(complete_command, local_vars)?;
+            all_stdout.push_str(&stdout);
+            all_stderr.push_str(&stderr);
+            last_exit_code = code;
         }
 
-        // Multi-command pipeline: wire stdout -> stdin via pipes
+        Ok((all_stdout, all_stderr, last_exit_code))
+    }
+
+    fn execute_compound_list(
+        &self,
+        list: &CompoundList,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+        let mut last_exit_code = 0;
+
+        for item in &list.0 {
+            let (stdout, stderr, code) = self.execute_and_or_list(&item.0, local_vars)?;
+            all_stdout.push_str(&stdout);
+            all_stderr.push_str(&stderr);
+            last_exit_code = code;
+        }
+
+        Ok((all_stdout, all_stderr, last_exit_code))
+    }
+
+    fn execute_and_or_list(
+        &self,
+        and_or: &AndOrList,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+
+        let (stdout, stderr, mut last_code) =
+            self.execute_pipeline(&and_or.first, local_vars)?;
+        all_stdout.push_str(&stdout);
+        all_stderr.push_str(&stderr);
+
+        for additional in &and_or.additional {
+            match additional {
+                AndOr::And(pipeline) => {
+                    if last_code == 0 {
+                        let (stdout, stderr, code) =
+                            self.execute_pipeline(pipeline, local_vars)?;
+                        all_stdout.push_str(&stdout);
+                        all_stderr.push_str(&stderr);
+                        last_code = code;
+                    }
+                }
+                AndOr::Or(pipeline) => {
+                    if last_code != 0 {
+                        let (stdout, stderr, code) =
+                            self.execute_pipeline(pipeline, local_vars)?;
+                        all_stdout.push_str(&stdout);
+                        all_stderr.push_str(&stderr);
+                        last_code = code;
+                    }
+                }
+            }
+        }
+
+        Ok((all_stdout, all_stderr, last_code))
+    }
+
+    fn execute_pipeline(
+        &self,
+        pipeline: &Pipeline,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let commands = &pipeline.seq;
+
+        if commands.len() == 1 {
+            let (stdout, stderr, mut code) =
+                self.execute_command(&commands[0], local_vars, None)?;
+            if pipeline.bang {
+                code = if code == 0 { 1 } else { 0 };
+            }
+            return Ok((stdout, stderr, code));
+        }
+
+        // Multi-command pipeline: use OS pipes for concurrent execution.
+        // All commands in a pipeline must be simple commands for OS pipe wiring.
+        // If any are compound, fall back to sequential execution.
+
+        let all_simple = commands.iter().all(|c| matches!(c, BrushCommand::Simple(_)));
+
+        if all_simple {
+            return self.execute_simple_pipeline(commands, local_vars, pipeline.bang);
+        }
+
+        // Fallback: sequential execution for mixed pipelines
+        let mut previous_stdout_data: Option<String> = None;
+        let mut all_stderr = String::new();
+        let mut final_stdout = String::new();
+        let mut final_exit_code = 0;
+
+        for (i, cmd) in commands.iter().enumerate() {
+            let is_last = i == commands.len() - 1;
+            let (stdout, stderr, code) =
+                self.execute_command(cmd, local_vars, previous_stdout_data.take())?;
+            all_stderr.push_str(&stderr);
+
+            if is_last {
+                final_stdout = stdout;
+                final_exit_code = code;
+            } else {
+                previous_stdout_data = Some(stdout);
+                final_exit_code = code;
+            }
+        }
+
+        if pipeline.bang {
+            final_exit_code = if final_exit_code == 0 { 1 } else { 0 };
+        }
+
+        Ok((final_stdout, all_stderr, final_exit_code))
+    }
+
+    /// Execute a pipeline of simple commands using OS pipes for concurrent execution.
+    fn execute_simple_pipeline(
+        &self,
+        commands: &[BrushCommand],
+        local_vars: &mut HashMap<String, String>,
+        bang: bool,
+    ) -> Result<(String, String, i32), String> {
         let mut previous_stdout: Option<os_pipe::PipeReader> = None;
         let mut child_processes = Vec::new();
+        let mut cmd_infos = Vec::new(); // track redirects per command
         let last_idx = commands.len() - 1;
 
         for (i, cmd) in commands.iter().enumerate() {
-            let expanded_args = self.expand_command_args(cmd)?;
-            let mut process = Command::new(&cmd.name);
-            process.args(&expanded_args);
+            let simple = match cmd {
+                BrushCommand::Simple(s) => s,
+                _ => unreachable!(),
+            };
+            let (name, args, redirects) =
+                self.extract_simple_command(simple, local_vars)?;
+
+            let mut process = Command::new(&name);
+            process.args(&args);
             process.current_dir(&self.working_dir);
             self.configure_env(&mut process);
 
@@ -539,22 +342,24 @@ impl Executor {
             }
 
             if i < last_idx {
-                // Create a pipe for stdout
-                let (reader, writer) = os_pipe::pipe()
-                    .map_err(|e| format!("failed to create pipe: {}", e))?;
+                let (reader, writer) =
+                    os_pipe::pipe().map_err(|e| format!("failed to create pipe: {}", e))?;
                 process.stdout(writer);
                 process.stderr(Stdio::piped());
-                let child = process.spawn()
-                    .map_err(|e| format!("failed to spawn '{}': {}", cmd.name, e))?;
+                let child = process
+                    .spawn()
+                    .map_err(|e| format!("failed to spawn '{}': {}", name, e))?;
                 child_processes.push(child);
+                cmd_infos.push(redirects);
                 previous_stdout = Some(reader);
             } else {
-                // Last command: capture stdout and handle redirects
                 process.stdout(Stdio::piped());
                 process.stderr(Stdio::piped());
-                let child = process.spawn()
-                    .map_err(|e| format!("failed to spawn '{}': {}", cmd.name, e))?;
+                let child = process
+                    .spawn()
+                    .map_err(|e| format!("failed to spawn '{}': {}", name, e))?;
                 child_processes.push(child);
+                cmd_infos.push(redirects);
             }
         }
 
@@ -566,14 +371,7 @@ impl Executor {
         let mut final_exit_code = 0;
 
         for (i, child) in child_processes.into_iter().enumerate() {
-            let output = match wait_with_deadline(child, deadline) {
-                Ok(o) => o,
-                Err(e) => {
-                    // On timeout, remaining children are already gone (moved into iterator)
-                    return Err(e);
-                }
-            };
-
+            let output = wait_with_deadline(child, deadline)?;
             all_stderr.push_str(&String::from_utf8_lossy(&output.stderr));
 
             if i == last {
@@ -581,44 +379,673 @@ impl Executor {
                 final_exit_code = output.status.code().unwrap_or(1);
 
                 // Handle redirects on last command
-                let last_cmd = &commands[last];
-                if !last_cmd.redirects.is_empty() {
-                    final_stdout = self.apply_redirects(&final_stdout, &last_cmd.redirects)?;
+                let redirects = &cmd_infos[last];
+                if !redirects.is_empty() {
+                    final_stdout = self.apply_redirects(&final_stdout, redirects)?;
                 }
             }
+        }
+
+        if bang {
+            final_exit_code = if final_exit_code == 0 { 1 } else { 0 };
         }
 
         Ok((final_stdout, all_stderr, final_exit_code))
     }
 
-    fn expand_command_args(&self, cmd: &ast::Command) -> Result<Vec<String>, String> {
-        let mut expanded = Vec::new();
-        for arg in &cmd.args {
-            // Check path traversal on user-supplied arguments (not variable expansions)
-            match arg {
-                Arg::Bare(s) => self.check_arg_path(s)?,
-                Arg::SingleQuoted(s) => self.check_arg_path(s)?,
-                Arg::DoubleQuoted(_) | Arg::Var(_) => {} // checked at validate time / trusted
+    fn execute_command(
+        &self,
+        command: &BrushCommand,
+        local_vars: &mut HashMap<String, String>,
+        _stdin_data: Option<String>,
+    ) -> Result<(String, String, i32), String> {
+        match command {
+            BrushCommand::Simple(simple) => {
+                self.execute_simple_command(simple, local_vars, _stdin_data)
             }
-            expanded.extend(self.expand_arg(arg)?);
+            BrushCommand::Compound(compound, redirects) => {
+                let (mut stdout, stderr, code) =
+                    self.execute_compound_command(compound, local_vars)?;
+                if let Some(redirect_list) = redirects {
+                    let io_redirects = self.collect_redirects_from_list(redirect_list);
+                    if !io_redirects.is_empty() {
+                        stdout = self.apply_redirects(&stdout, &io_redirects)?;
+                    }
+                }
+                Ok((stdout, stderr, code))
+            }
+            BrushCommand::Function(_) => {
+                Err("function definitions are not allowed".to_string())
+            }
+            BrushCommand::ExtendedTest(_) => {
+                // [[ ... ]] — we don't execute these, but we could in the future.
+                // For now, return success (the validator already checked the contents).
+                Err("extended test expressions [[ ]] are not supported for execution".to_string())
+            }
         }
-        Ok(expanded)
     }
 
-    /// Reject arguments that traverse outside the working directory.
+    fn execute_simple_command(
+        &self,
+        cmd: &SimpleCommand,
+        local_vars: &mut HashMap<String, String>,
+        stdin_data: Option<String>,
+    ) -> Result<(String, String, i32), String> {
+        let (name, args, redirects) = self.extract_simple_command(cmd, local_vars)?;
+
+        let mut process = Command::new(&name);
+        process.args(&args);
+        process.current_dir(&self.working_dir);
+        self.configure_env(&mut process);
+
+        if stdin_data.is_some() {
+            process.stdin(Stdio::piped());
+        }
+
+        process.stdout(Stdio::piped());
+        process.stderr(Stdio::piped());
+
+        let mut child = process
+            .spawn()
+            .map_err(|e| format!("failed to spawn '{}': {}", name, e))?;
+
+        if let Some(data) = stdin_data {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(data.as_bytes());
+            }
+        }
+
+        let deadline = Instant::now() + self.timeout;
+        let output = wait_with_deadline(child, deadline)?;
+
+        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let exit_code = output.status.code().unwrap_or(1);
+
+        if !redirects.is_empty() {
+            stdout = self.apply_redirects(&stdout, &redirects)?;
+        }
+
+        Ok((stdout, stderr, exit_code))
+    }
+
+    /// Extract command name, expanded args, and redirects from a SimpleCommand.
+    fn extract_simple_command(
+        &self,
+        cmd: &SimpleCommand,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<(String, Vec<String>, Vec<RedirectInfo>), String> {
+        let name = match &cmd.word_or_name {
+            Some(w) => self.expand_word_to_string(w, local_vars)?,
+            None => return Err("empty command".to_string()),
+        };
+
+        let mut args = Vec::new();
+        let mut redirects = Vec::new();
+
+        // Process prefix items
+        if let Some(prefix) = &cmd.prefix {
+            for item in &prefix.0 {
+                match item {
+                    CommandPrefixOrSuffixItem::Word(w) => {
+                        // Only check path traversal on literal words (no $VAR or $())
+                        if self.word_is_literal(&w.value) {
+                            self.check_arg_path(&w.value)?;
+                        }
+                        let expanded = self.expand_word(w, local_vars)?;
+                        args.extend(expanded);
+                    }
+                    CommandPrefixOrSuffixItem::IoRedirect(r) => {
+                        redirects.extend(self.extract_redirect(r, local_vars)?);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Process suffix items
+        if let Some(suffix) = &cmd.suffix {
+            for item in &suffix.0 {
+                match item {
+                    CommandPrefixOrSuffixItem::Word(w) => {
+                        // Only check path traversal on literal words (no $VAR or $())
+                        if self.word_is_literal(&w.value) {
+                            self.check_arg_path(&w.value)?;
+                        }
+                        let expanded = self.expand_word(w, local_vars)?;
+                        args.extend(expanded);
+                    }
+                    CommandPrefixOrSuffixItem::IoRedirect(r) => {
+                        redirects.extend(self.extract_redirect(r, local_vars)?);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok((name, args, redirects))
+    }
+
+    fn execute_compound_command(
+        &self,
+        compound: &CompoundCommand,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        match compound {
+            CompoundCommand::BraceGroup(bg) => {
+                self.execute_compound_list(&bg.list, local_vars)
+            }
+            CompoundCommand::Subshell(sub) => {
+                // Execute in a "subshell" (we don't fork, but local_vars don't leak out)
+                let mut sub_vars = local_vars.clone();
+                self.execute_compound_list(&sub.list, &mut sub_vars)
+            }
+            CompoundCommand::ForClause(fc) => {
+                self.execute_for_clause(fc, local_vars)
+            }
+            CompoundCommand::WhileClause(wc) => {
+                self.execute_while_clause(&wc.0, &wc.1.list, true, local_vars)
+            }
+            CompoundCommand::UntilClause(uc) => {
+                self.execute_while_clause(&uc.0, &uc.1.list, false, local_vars)
+            }
+            CompoundCommand::IfClause(ic) => {
+                self.execute_if_clause(ic, local_vars)
+            }
+            CompoundCommand::CaseClause(cc) => {
+                self.execute_case_clause(cc, local_vars)
+            }
+            CompoundCommand::Arithmetic(_) => {
+                // (( expr )) — not supported for execution yet
+                Ok((String::new(), String::new(), 0))
+            }
+            CompoundCommand::ArithmeticForClause(_) => {
+                Err("arithmetic for loops (( )) are not supported".to_string())
+            }
+        }
+    }
+
+    fn execute_for_clause(
+        &self,
+        fc: &ForClauseCommand,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+        let mut last_code = 0;
+
+        // Expand the values to iterate over
+        let values: Vec<String> = if let Some(word_values) = &fc.values {
+            let mut vals = Vec::new();
+            for w in word_values {
+                vals.extend(self.expand_word(w, local_vars)?);
+            }
+            vals
+        } else {
+            // Default: iterate over positional parameters (not supported in rsh)
+            Vec::new()
+        };
+
+        for value in values {
+            local_vars.insert(fc.variable_name.clone(), value);
+            let (stdout, stderr, code) =
+                self.execute_compound_list(&fc.body.list, local_vars)?;
+            all_stdout.push_str(&stdout);
+            all_stderr.push_str(&stderr);
+            last_code = code;
+        }
+
+        Ok((all_stdout, all_stderr, last_code))
+    }
+
+    fn execute_while_clause(
+        &self,
+        condition: &CompoundList,
+        body: &CompoundList,
+        is_while: bool,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+        let mut last_code = 0;
+        let max_iterations = 10_000; // Safety limit
+        let mut iterations = 0;
+
+        loop {
+            if iterations >= max_iterations {
+                return Err("loop exceeded maximum iterations (10000)".to_string());
+            }
+            iterations += 1;
+
+            let (cond_stdout, cond_stderr, cond_code) =
+                self.execute_compound_list(condition, local_vars)?;
+            all_stdout.push_str(&cond_stdout);
+            all_stderr.push_str(&cond_stderr);
+
+            let should_continue = if is_while {
+                cond_code == 0
+            } else {
+                cond_code != 0
+            };
+
+            if !should_continue {
+                break;
+            }
+
+            let (body_stdout, body_stderr, body_code) =
+                self.execute_compound_list(body, local_vars)?;
+            all_stdout.push_str(&body_stdout);
+            all_stderr.push_str(&body_stderr);
+            last_code = body_code;
+        }
+
+        Ok((all_stdout, all_stderr, last_code))
+    }
+
+    fn execute_if_clause(
+        &self,
+        ic: &IfClauseCommand,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+
+        // Evaluate condition
+        let (cond_stdout, cond_stderr, cond_code) =
+            self.execute_compound_list(&ic.condition, local_vars)?;
+        all_stdout.push_str(&cond_stdout);
+        all_stderr.push_str(&cond_stderr);
+
+        if cond_code == 0 {
+            // Condition true — execute then branch
+            let (then_stdout, then_stderr, then_code) =
+                self.execute_compound_list(&ic.then, local_vars)?;
+            all_stdout.push_str(&then_stdout);
+            all_stderr.push_str(&then_stderr);
+            return Ok((all_stdout, all_stderr, then_code));
+        }
+
+        // Try elif/else clauses
+        if let Some(elses) = &ic.elses {
+            for else_clause in elses {
+                if let Some(elif_condition) = &else_clause.condition {
+                    let (elif_stdout, elif_stderr, elif_code) =
+                        self.execute_compound_list(elif_condition, local_vars)?;
+                    all_stdout.push_str(&elif_stdout);
+                    all_stderr.push_str(&elif_stderr);
+
+                    if elif_code == 0 {
+                        let (body_stdout, body_stderr, body_code) =
+                            self.execute_compound_list(&else_clause.body, local_vars)?;
+                        all_stdout.push_str(&body_stdout);
+                        all_stderr.push_str(&body_stderr);
+                        return Ok((all_stdout, all_stderr, body_code));
+                    }
+                } else {
+                    // else (no condition)
+                    let (body_stdout, body_stderr, body_code) =
+                        self.execute_compound_list(&else_clause.body, local_vars)?;
+                    all_stdout.push_str(&body_stdout);
+                    all_stderr.push_str(&body_stderr);
+                    return Ok((all_stdout, all_stderr, body_code));
+                }
+            }
+        }
+
+        // No branch matched
+        Ok((all_stdout, all_stderr, 0))
+    }
+
+    fn execute_case_clause(
+        &self,
+        cc: &CaseClauseCommand,
+        local_vars: &mut HashMap<String, String>,
+    ) -> Result<(String, String, i32), String> {
+        let value = self.expand_word_to_string(&cc.value, local_vars)?;
+        let mut all_stdout = String::new();
+        let mut all_stderr = String::new();
+
+        for case_item in &cc.cases {
+            let mut matched = false;
+            for pattern in &case_item.patterns {
+                let pat = self.expand_word_to_string(pattern, local_vars)?;
+                if shell_pattern_matches(&pat, &value) {
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                if let Some(cmd_list) = &case_item.cmd {
+                    let (stdout, stderr, code) =
+                        self.execute_compound_list(cmd_list, local_vars)?;
+                    all_stdout.push_str(&stdout);
+                    all_stderr.push_str(&stderr);
+                    return Ok((all_stdout, all_stderr, code));
+                }
+                return Ok((all_stdout, all_stderr, 0));
+            }
+        }
+
+        Ok((all_stdout, all_stderr, 0))
+    }
+
+    // --- Word expansion ---
+
+    /// Expand a word to a single string (no word splitting, no glob).
+    fn expand_word_to_string(
+        &self,
+        word: &Word,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        let pieces = self.expand_word_pieces(&word.value, local_vars)?;
+        Ok(pieces.join(""))
+    }
+
+    /// Expand a word, potentially producing multiple strings (glob expansion + word splitting).
+    fn expand_word(
+        &self,
+        word: &Word,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<Vec<String>, String> {
+        // Check if this word needs word splitting (contains unquoted $() or $VAR)
+        let needs_split = self.word_needs_splitting(&word.value);
+
+        let expanded = self.expand_word_to_string(word, local_vars)?;
+
+        if needs_split {
+            // Word-split by whitespace (IFS), then glob-expand each part
+            let mut results = Vec::new();
+            for part in expanded.split_whitespace() {
+                if rsh_glob::is_glob(part) {
+                    results.extend(rsh_glob::expand_glob(
+                        part,
+                        &self.working_dir,
+                        self.allow_absolute,
+                    )?);
+                } else {
+                    results.push(part.to_string());
+                }
+            }
+            if results.is_empty() {
+                // Empty expansion produces no arguments (not an empty string)
+                return Ok(Vec::new());
+            }
+            return Ok(results);
+        }
+
+        // Try glob expansion — only on words that have unquoted glob chars
+        if self.word_has_unquoted_glob(&word.value) {
+            return rsh_glob::expand_glob(&expanded, &self.working_dir, self.allow_absolute);
+        }
+
+        Ok(vec![expanded])
+    }
+
+    /// Check if a word contains unquoted glob characters (*, ?, [).
+    fn word_has_unquoted_glob(&self, raw: &str) -> bool {
+        let opts = ParserOptions::default();
+        let pieces = match word::parse(raw, &opts) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        for p in &pieces {
+            if let WordPiece::Text(s) = &p.piece {
+                if rsh_glob::is_glob(s) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a word is literal (no variable references, command substitutions, etc.)
+    fn word_is_literal(&self, raw: &str) -> bool {
+        let opts = ParserOptions::default();
+        let pieces = match word::parse(raw, &opts) {
+            Ok(p) => p,
+            Err(_) => return true,
+        };
+        for p in &pieces {
+            match &p.piece {
+                WordPiece::Text(_)
+                | WordPiece::SingleQuotedText(_)
+                | WordPiece::EscapeSequence(_) => {}
+                WordPiece::DoubleQuotedSequence(inner) => {
+                    for ip in inner {
+                        match &ip.piece {
+                            WordPiece::Text(_) | WordPiece::EscapeSequence(_) => {}
+                            _ => return false,
+                        }
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Check if a word's raw value contains unquoted command substitution or variable reference
+    /// that would require word splitting after expansion.
+    fn word_needs_splitting(&self, raw: &str) -> bool {
+        let opts = ParserOptions::default();
+        let pieces = match word::parse(raw, &opts) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        for p in &pieces {
+            match &p.piece {
+                WordPiece::CommandSubstitution(_)
+                | WordPiece::BackquotedCommandSubstitution(_) => return true,
+                // Don't split for plain $VAR or ${VAR} — shell only splits $() and `...`
+                // Actually in shell, unquoted $VAR is also word-split. But for safety/simplicity
+                // we only split command substitutions for now.
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Parse word pieces and expand them.
+    fn expand_word_pieces(
+        &self,
+        raw: &str,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<Vec<String>, String> {
+        let opts = ParserOptions::default();
+        let pieces =
+            word::parse(raw, &opts).map_err(|e| format!("word parse error: {}", e))?;
+        let mut result = Vec::new();
+        for p in &pieces {
+            result.push(self.expand_piece(&p.piece, local_vars)?);
+        }
+        Ok(result)
+    }
+
+    fn expand_piece(
+        &self,
+        piece: &WordPiece,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        match piece {
+            WordPiece::Text(s) => Ok(s.clone()),
+            WordPiece::SingleQuotedText(s) => Ok(s.clone()),
+            WordPiece::AnsiCQuotedText(s) => Ok(s.clone()),
+            WordPiece::EscapeSequence(s) => {
+                // Interpret common escape sequences
+                if s.len() == 2 && s.starts_with('\\') {
+                    let ch = s.chars().nth(1).unwrap();
+                    match ch {
+                        'n' => Ok("\n".to_string()),
+                        't' => Ok("\t".to_string()),
+                        'r' => Ok("\r".to_string()),
+                        '\\' => Ok("\\".to_string()),
+                        _ => Ok(ch.to_string()),
+                    }
+                } else {
+                    Ok(s.clone())
+                }
+            }
+            WordPiece::TildePrefix(s) => {
+                if s.is_empty() || s == "~" {
+                    // Expand ~ to HOME
+                    Ok(std::env::var("HOME").unwrap_or_else(|_| "~".to_string()))
+                } else {
+                    Ok(s.clone())
+                }
+            }
+            WordPiece::ParameterExpansion(expr) => {
+                self.expand_parameter(expr, local_vars)
+            }
+            WordPiece::CommandSubstitution(cmd_str) => {
+                self.execute_command_substitution(cmd_str, local_vars)
+            }
+            WordPiece::BackquotedCommandSubstitution(cmd_str) => {
+                self.execute_command_substitution(cmd_str, local_vars)
+            }
+            WordPiece::DoubleQuotedSequence(pieces) => {
+                let mut result = String::new();
+                for p in pieces {
+                    result.push_str(&self.expand_piece(&p.piece, local_vars)?);
+                }
+                Ok(result)
+            }
+            WordPiece::GettextDoubleQuotedSequence(pieces) => {
+                let mut result = String::new();
+                for p in pieces {
+                    result.push_str(&self.expand_piece(&p.piece, local_vars)?);
+                }
+                Ok(result)
+            }
+            WordPiece::ArithmeticExpression(_) => {
+                // Arithmetic expansion — not fully supported
+                Ok(String::new())
+            }
+        }
+    }
+
+    fn expand_parameter(
+        &self,
+        expr: &ParameterExpr,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        match expr {
+            ParameterExpr::Parameter { parameter, .. } => {
+                self.resolve_parameter(parameter, local_vars)
+            }
+            ParameterExpr::UseDefaultValues {
+                parameter,
+                default_value,
+                test_type,
+                ..
+            } => {
+                let val = self.resolve_parameter(parameter, local_vars)?;
+                let is_empty = match test_type {
+                    word::ParameterTestType::UnsetOrNull => val.is_empty(),
+                    word::ParameterTestType::Unset => false, // We always have a value (possibly empty)
+                };
+                if is_empty {
+                    if let Some(default) = default_value {
+                        self.expand_word_pieces(default, local_vars)
+                            .map(|v| v.join(""))
+                    } else {
+                        Ok(String::new())
+                    }
+                } else {
+                    Ok(val)
+                }
+            }
+            _ => {
+                // For other complex parameter operations, try basic resolution
+                Ok(String::new())
+            }
+        }
+    }
+
+    fn resolve_parameter(
+        &self,
+        param: &Parameter,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        match param {
+            Parameter::Named(name) => {
+                // Check local vars first, then environment
+                if let Some(val) = local_vars.get(name.as_str()) {
+                    Ok(val.clone())
+                } else if self.approved_vars.contains(name.as_str()) {
+                    Ok(std::env::var(name).unwrap_or_default())
+                } else {
+                    // Variable was validated — should be in approved list or local
+                    Ok(std::env::var(name).unwrap_or_default())
+                }
+            }
+            Parameter::Special(sp) => {
+                match sp {
+                    word::SpecialParameter::LastExitStatus => Ok("0".to_string()),
+                    word::SpecialParameter::ProcessId => {
+                        Ok(std::process::id().to_string())
+                    }
+                    _ => Ok(String::new()),
+                }
+            }
+            Parameter::Positional(_) => Ok(String::new()),
+            Parameter::NamedWithIndex { name, .. }
+            | Parameter::NamedWithAllIndices { name, .. } => {
+                if let Some(val) = local_vars.get(name.as_str()) {
+                    Ok(val.clone())
+                } else {
+                    Ok(std::env::var(name).unwrap_or_default())
+                }
+            }
+        }
+    }
+
+    /// Execute a command substitution $(...) or `...`
+    fn execute_command_substitution(
+        &self,
+        cmd_str: &str,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<String, String> {
+        // Parse the inner command
+        let reader = std::io::Cursor::new(cmd_str);
+        let mut parser = brush_parser::Parser::builder().reader(reader).build();
+        let inner_program = parser
+            .parse_program()
+            .map_err(|e| format!("parse error in command substitution: {}", e))?;
+
+        // Execute it
+        let mut sub_vars = local_vars.clone();
+        let (stdout, _stderr, _code) =
+            self.execute_program(&inner_program, &mut sub_vars)?;
+
+        // Trim trailing newline (shell behavior)
+        Ok(stdout.trim_end_matches('\n').to_string())
+    }
+
+    // --- Environment ---
+
+    fn configure_env(&self, process: &mut Command) {
+        if !self.inherit_env {
+            process.env_clear();
+            for var in &self.approved_vars {
+                if let Ok(val) = std::env::var(var) {
+                    process.env(var, val);
+                }
+            }
+        }
+    }
+
+    // --- Path checking ---
+
     fn check_arg_path(&self, arg: &str) -> Result<(), String> {
-        // Skip flags
         if arg.starts_with('-') {
             return Ok(());
         }
-        // Reject absolute paths unless allowed
         if arg.starts_with('/') && !self.allow_absolute {
             return Err(format!(
                 "absolute path '{}' in argument not allowed (use --allow-absolute)",
                 arg
             ));
         }
-        // Reject .. path components
         if arg.split('/').any(|seg| seg == "..") {
             return Err(format!(
                 "path traversal ('..') in argument '{}' not allowed",
@@ -628,38 +1055,49 @@ impl Executor {
         Ok(())
     }
 
-    fn execute_single_command(
+    // --- Redirects ---
+
+    fn extract_redirect(
         &self,
-        cmd: &ast::Command,
-    ) -> Result<(String, String, i32), String> {
-        let expanded_args = self.expand_command_args(cmd)?;
-
-        let mut process = Command::new(&cmd.name);
-        process.args(&expanded_args);
-        process.current_dir(&self.working_dir);
-        self.configure_env(&mut process);
-        process.stdout(Stdio::piped());
-        process.stderr(Stdio::piped());
-
-        let child = process.spawn()
-            .map_err(|e| format!("failed to spawn '{}': {}", cmd.name, e))?;
-
-        let deadline = Instant::now() + self.timeout;
-        let output = wait_with_deadline(child, deadline)?;
-
-        let mut stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let exit_code = output.status.code().unwrap_or(1);
-
-        // Handle redirects
-        if !cmd.redirects.is_empty() {
-            stdout = self.apply_redirects(&stdout, &cmd.redirects)?;
+        redirect: &IoRedirect,
+        local_vars: &HashMap<String, String>,
+    ) -> Result<Vec<RedirectInfo>, String> {
+        match redirect {
+            IoRedirect::File(_, kind, target) => {
+                let redir_kind = match kind {
+                    IoFileRedirectKind::Write | IoFileRedirectKind::Clobber => {
+                        RedirectKindSimple::Overwrite
+                    }
+                    IoFileRedirectKind::Append => RedirectKindSimple::Append,
+                    _ => return Ok(Vec::new()), // Other redirects handled by validator
+                };
+                let target_str = match target {
+                    IoFileRedirectTarget::Filename(w) => {
+                        self.expand_word_to_string(w, local_vars)?
+                    }
+                    _ => return Ok(Vec::new()),
+                };
+                Ok(vec![RedirectInfo {
+                    kind: redir_kind,
+                    target: target_str,
+                }])
+            }
+            _ => Ok(Vec::new()),
         }
-
-        Ok((stdout, stderr, exit_code))
     }
 
-    fn apply_redirects(&self, stdout: &str, redirects: &[ast::Redirect]) -> Result<String, String> {
+    fn collect_redirects_from_list(&self, list: &RedirectList) -> Vec<RedirectInfo> {
+        let empty_vars = HashMap::new();
+        let mut result = Vec::new();
+        for r in &list.0 {
+            if let Ok(infos) = self.extract_redirect(r, &empty_vars) {
+                result.extend(infos);
+            }
+        }
+        result
+    }
+
+    fn apply_redirects(&self, stdout: &str, redirects: &[RedirectInfo]) -> Result<String, String> {
         for redirect in redirects {
             let path = if redirect.target.starts_with('/') {
                 if !self.allow_absolute {
@@ -673,14 +1111,15 @@ impl Executor {
                 self.working_dir.join(&redirect.target)
             };
 
-            // Path traversal guard: ensure the resolved path stays within working_dir.
-            // We canonicalize the parent directory (which must exist) and check the prefix.
-            let canon_working = self.working_dir.canonicalize()
+            // Path traversal guard
+            let canon_working = self
+                .working_dir
+                .canonicalize()
                 .map_err(|e| format!("cannot canonicalize working dir: {}", e))?;
             let parent = path.parent().unwrap_or(&path);
-            // Create parent dir if it doesn't exist (only within working_dir)
             let canon_parent = if parent.exists() {
-                parent.canonicalize()
+                parent
+                    .canonicalize()
                     .map_err(|e| format!("cannot canonicalize redirect parent: {}", e))?
             } else {
                 return Err(format!(
@@ -697,21 +1136,55 @@ impl Executor {
             }
 
             match redirect.kind {
-                RedirectKind::Overwrite => {
-                    let mut f = File::create(&path)
-                        .map_err(|e| format!("cannot open '{}' for writing: {}", redirect.target, e))?;
+                RedirectKindSimple::Overwrite => {
+                    let mut f = File::create(&path).map_err(|e| {
+                        format!("cannot open '{}' for writing: {}", redirect.target, e)
+                    })?;
                     f.write_all(stdout.as_bytes())
                         .map_err(|e| format!("write error: {}", e))?;
                 }
-                RedirectKind::Append => {
-                    let mut f = OpenOptions::new().create(true).append(true).open(&path)
-                        .map_err(|e| format!("cannot open '{}' for appending: {}", redirect.target, e))?;
+                RedirectKindSimple::Append => {
+                    let mut f = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                        .map_err(|e| {
+                            format!("cannot open '{}' for appending: {}", redirect.target, e)
+                        })?;
                     f.write_all(stdout.as_bytes())
                         .map_err(|e| format!("write error: {}", e))?;
                 }
             }
         }
-        // When stdout is redirected, the captured output goes to the file, not to the caller
         Ok(String::new())
+    }
+}
+
+// Use a type alias to avoid confusion with brush_parser's Command
+use brush_parser::ast::Command as BrushCommand;
+
+/// Simple redirect info extracted from the AST.
+#[derive(Debug, Clone)]
+struct RedirectInfo {
+    kind: RedirectKindSimple,
+    target: String,
+}
+
+#[derive(Debug, Clone)]
+enum RedirectKindSimple {
+    Overwrite,
+    Append,
+}
+
+/// Simple shell glob pattern matching for case statements.
+fn shell_pattern_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    // Use glob-style matching
+    let glob_pattern = glob::Pattern::new(pattern);
+    match glob_pattern {
+        Ok(p) => p.matches(value),
+        Err(_) => pattern == value,
     }
 }

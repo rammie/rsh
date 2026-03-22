@@ -83,22 +83,22 @@ fn test_grep_recursive_in_directory() {
 fn test_grep_multiple_flags() {
     // -r recursive, -l files only, -i case insensitive
     let out = run_ok("grep -rli 'struct' src/");
-    assert!(out.contains("ast.rs"));
+    assert!(out.contains("validator.rs"));
     assert!(out.contains("executor.rs"));
 }
 
 #[test]
 fn test_grep_regex_pattern() {
     // Match function signatures: fn word(
-    let out = run_ok("grep -E 'fn [a-z_]+\\(' src/parser.rs");
-    assert!(out.contains("fn parse"));
-    assert!(out.contains("fn peek"));
+    let out = run_ok("grep -E 'fn [a-z_]+\\(' src/validator.rs");
+    assert!(out.contains("fn validate"));
+    assert!(out.contains("fn validate_program"));
 }
 
 #[test]
 fn test_grep_inverted_match() {
     // Lines NOT containing 'use' in a small file
-    let out = run_ok("grep -v 'use' src/ast.rs");
+    let out = run_ok("grep -v 'use' src/glob.rs");
     // Should have content but no 'use' lines
     assert!(!out.is_empty());
     for line in out.lines() {
@@ -124,22 +124,22 @@ fn test_grep_context_lines() {
 #[test]
 fn test_grep_keyword_in_quotes_not_rejected() {
     // Regression: 'if' in a quoted grep pattern must not be blocked as a keyword
-    let out = run_ok("grep 'if' src/parser.rs");
+    let out = run_ok("grep 'if' src/validator.rs");
     assert!(!out.is_empty(), "grep 'if' should find matches");
 }
 
 #[test]
 fn test_grep_and_operator_in_quotes() {
     // Regression: '&&' in a quoted grep pattern must not be blocked
-    let out = run_ok("grep '&&' src/parser.rs");
+    let out = run_ok("grep '&&' src/validator.rs");
     assert!(!out.is_empty(), "grep '&&' should find matches");
 }
 
 #[test]
 fn test_grep_pipe_in_quotes() {
     // '|' in a quoted pattern should not break pipeline parsing
-    let out = run_ok("grep 'Some(ch)' src/parser.rs");
-    assert!(out.contains("Some(ch)"));
+    let out = run_ok("grep 'Some(redirect_list)' src/validator.rs");
+    assert!(out.contains("Some(redirect_list)"));
 }
 
 #[test]
@@ -158,11 +158,10 @@ fn test_grep_no_match_exit_code() {
 fn test_find_all_rust_files() {
     let out = run_ok("find src -name '*.rs'");
     assert!(out.contains("src/main.rs"));
-    assert!(out.contains("src/parser.rs"));
+    assert!(out.contains("src/validator.rs"));
     assert!(out.contains("src/executor.rs"));
     assert!(out.contains("src/allowlist.rs"));
     assert!(out.contains("src/glob.rs"));
-    assert!(out.contains("src/ast.rs"));
 }
 
 #[test]
@@ -230,7 +229,7 @@ fn test_find_pipe_wc_count_files() {
     // Count the number of .rs source files
     let out = run_ok("find src -name '*.rs' -type f | wc -l");
     let count: i32 = out.trim().parse().unwrap();
-    assert_eq!(count, 6, "expected 6 source files, got {}", count);
+    assert_eq!(count, 5, "expected 5 source files, got {}", count);
 }
 
 #[test]
@@ -259,9 +258,9 @@ fn test_grep_pipe_grep_double_filter() {
 #[test]
 fn test_cat_pipe_grep_pipe_wc() {
     // Three-stage pipeline: read file, filter, count
-    let out = run_ok("cat src/ast.rs | grep 'pub' | wc -l");
+    let out = run_ok("cat src/glob.rs | grep 'pub' | wc -l");
     let count: i32 = out.trim().parse().unwrap();
-    assert!(count > 5, "expected many pub items in ast.rs, got {}", count);
+    assert!(count >= 2, "expected pub items in glob.rs, got {}", count);
 }
 
 #[test]
@@ -316,7 +315,7 @@ fn test_ls_hidden_files() {
 fn test_ls_subdirectory() {
     let out = run_ok("ls src/");
     assert!(out.contains("main.rs"));
-    assert!(out.contains("parser.rs"));
+    assert!(out.contains("validator.rs"));
 }
 
 #[test]
@@ -333,9 +332,9 @@ fn test_ls_glob_pattern() {
 
 #[test]
 fn test_cat_whole_file() {
-    let out = run_ok("cat src/ast.rs");
-    assert!(out.contains("pub struct Program"));
-    assert!(out.contains("pub enum Arg"));
+    let out = run_ok("cat src/glob.rs");
+    assert!(out.contains("pub fn is_glob"));
+    assert!(out.contains("pub fn expand_glob"));
 }
 
 #[test]
@@ -364,9 +363,9 @@ fn test_tail_specific_count() {
 
 #[test]
 fn test_cat_multiple_files() {
-    let out = run_ok("cat src/ast.rs src/glob.rs");
+    let out = run_ok("cat src/validator.rs src/glob.rs");
     // Should contain content from both files
-    assert!(out.contains("pub struct Program"));
+    assert!(out.contains("pub struct ValidatorConfig"));
     assert!(out.contains("fn is_glob"));
 }
 
@@ -376,13 +375,13 @@ fn test_cat_multiple_files() {
 
 #[test]
 fn test_wc_lines() {
-    let out = run_ok("wc -l src/ast.rs");
-    assert!(out.contains("ast.rs") || out.trim().parse::<i32>().is_ok());
+    let out = run_ok("wc -l src/glob.rs");
+    assert!(out.contains("glob.rs") || out.trim().parse::<i32>().is_ok());
 }
 
 #[test]
 fn test_wc_words() {
-    let out = run_ok("wc -w src/ast.rs");
+    let out = run_ok("wc -w src/glob.rs");
     let parts: Vec<&str> = out.trim().split_whitespace().collect();
     let count: i32 = parts[0].parse().unwrap();
     assert!(count > 10, "expected many words, got {}", count);
@@ -390,7 +389,7 @@ fn test_wc_words() {
 
 #[test]
 fn test_wc_multiple_files() {
-    let out = run_ok("wc -l src/ast.rs src/main.rs");
+    let out = run_ok("wc -l src/glob.rs src/main.rs");
     // wc with multiple files should show individual counts and total
     assert!(out.contains("total") || out.lines().count() >= 2);
 }
@@ -453,7 +452,7 @@ fn test_semicolon_three_commands() {
 
 #[test]
 fn test_semicolon_mixed_commands() {
-    let json = run("echo start; wc -l src/ast.rs; echo end");
+    let json = run("echo start; wc -l src/glob.rs; echo end");
     assert!(json["error"].is_null(), "error: {}", json["error"]);
     let out = json["stdout"].as_str().unwrap();
     assert!(out.starts_with("start\n"));
@@ -477,14 +476,14 @@ fn test_glob_star_rs() {
     // ls src/*.rs should list all source files
     let out = run_ok("ls src/*.rs");
     assert!(out.contains("main.rs"));
-    assert!(out.contains("parser.rs"));
+    assert!(out.contains("validator.rs"));
 }
 
 #[test]
 fn test_glob_question_mark() {
-    // src/ast.rs is 6 chars — src/??t.rs should match ast.rs
-    let out = run_ok("ls src/??t.rs");
-    assert!(out.contains("ast.rs"), "stdout: {}", out);
+    // src/gl?b.rs should match glob.rs via ? wildcard
+    let out = run_ok("ls src/gl?b.rs");
+    assert!(out.contains("glob.rs"), "stdout: {}", out);
 }
 
 #[test]
@@ -505,7 +504,7 @@ fn test_workflow_find_and_count_lines() {
     // Agent wants to know how many .rs files exist and total line count
     let file_count = run_ok("find src -name '*.rs' -type f | wc -l");
     let count: i32 = file_count.trim().parse().unwrap();
-    assert!(count >= 6, "expected at least 6 .rs files");
+    assert!(count >= 5, "expected at least 5 .rs files");
 }
 
 #[test]
@@ -515,9 +514,7 @@ fn test_workflow_search_for_struct_definitions() {
     assert!(out.contains("Allowlist"));
     assert!(out.contains("Executor"));
     assert!(out.contains("Output"));
-    assert!(out.contains("Program"));
-    assert!(out.contains("Pipeline"));
-    assert!(out.contains("ParseError"));
+    assert!(out.contains("ValidatorConfig"));
 }
 
 #[test]
@@ -533,7 +530,7 @@ fn test_workflow_check_imports() {
     // Agent inspects which modules are imported in main
     let out = run_ok("grep '^mod ' src/main.rs");
     assert!(out.contains("mod allowlist"));
-    assert!(out.contains("mod parser"));
+    assert!(out.contains("mod validator"));
     assert!(out.contains("mod executor"));
 }
 
@@ -548,26 +545,26 @@ fn test_workflow_inspect_file_structure() {
 #[test]
 fn test_workflow_grep_pipe_grep_refine_search() {
     // Agent first finds all function defs, then narrows to non-pub ones
-    // ast.rs has no private functions, so the result is empty (exit code 1)
+    // glob.rs has no private functions, so the result is empty (exit code 1)
     // The point is the double-grep pipeline works without validation error
-    let json = run("grep -n 'fn ' src/ast.rs | grep -v 'pub'");
+    let json = run("grep -n 'fn ' src/glob.rs | grep -v 'pub'");
     assert!(json["error"].is_null());
 }
 
 #[test]
 fn test_workflow_count_lines_per_file() {
     // Agent checks which source files are largest
-    let out = run_ok("wc -l src/executor.rs src/parser.rs src/main.rs");
+    let out = run_ok("wc -l src/executor.rs src/validator.rs src/main.rs");
     assert!(out.contains("executor.rs"));
-    assert!(out.contains("parser.rs"));
+    assert!(out.contains("validator.rs"));
     assert!(out.contains("main.rs"));
 }
 
 #[test]
 fn test_workflow_read_specific_section() {
     // Agent reads the first 5 lines of a file to see the module doc comment
-    let out = run_ok("head -n 5 src/parser.rs");
-    assert!(out.contains("parser"), "expected parser doc: {}", out);
+    let out = run_ok("head -n 5 src/validator.rs");
+    assert!(out.contains("AST security walker"), "expected validator doc: {}", out);
 }
 
 #[test]
@@ -693,8 +690,8 @@ fn test_redirect_grep_output_to_file() {
 
     // Copy a source file into the temp dir so we have something to grep
     std::fs::copy(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ast.rs"),
-        tmp.join("ast.rs"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glob.rs"),
+        tmp.join("glob.rs"),
     ).unwrap();
 
     let output = rsh_bin()
@@ -702,14 +699,14 @@ fn test_redirect_grep_output_to_file() {
         .arg("--allow-redirects")
         .arg("--dir")
         .arg(tmp.to_str().unwrap())
-        .arg("grep 'pub' ast.rs > structs.txt")
+        .arg("grep 'pub' glob.rs > structs.txt")
         .output()
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert!(json["error"].is_null(), "error: {}", json["error"]);
 
     let content = std::fs::read_to_string(tmp.join("structs.txt")).unwrap();
-    assert!(content.contains("pub struct"));
+    assert!(content.contains("pub fn"));
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -791,7 +788,7 @@ fn test_glob_in_cat_with_pipeline() {
 fn test_glob_in_wc() {
     // wc -l on all .rs files
     let out = run_ok("wc -l src/*.rs");
-    assert!(out.contains("total") || out.lines().count() >= 6);
+    assert!(out.contains("total") || out.lines().count() >= 5);
 }
 
 #[test]

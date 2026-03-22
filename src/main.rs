@@ -1,8 +1,7 @@
 mod allowlist;
-mod ast;
 mod executor;
 mod glob;
-mod parser;
+mod validator;
 
 use executor::{Executor, Output};
 
@@ -123,20 +122,33 @@ fn main() {
         None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
 
-    // Parse
-    let program = match parser::parse(&command_string) {
+    // Parse using brush-parser
+    let reader = std::io::Cursor::new(&command_string);
+    let mut parser = brush_parser::Parser::builder().reader(reader).build();
+    let program = match parser.parse_program() {
         Ok(p) => p,
         Err(e) => {
-            print_json(&Output::error(e.to_string()));
+            print_json(&Output::error(format!("parse error: {}", e)));
             std::process::exit(1);
         }
     };
 
+    // Check for empty program
+    if program.complete_commands.is_empty() {
+        print_json(&Output::error("empty input".to_string()));
+        std::process::exit(1);
+    }
+
     // Execute
     let al = allowlist::Allowlist::load(allow_flag.as_deref());
     let executor = Executor::new(
-        al, working_dir, allow_absolute, allow_redirects,
-        max_output, timeout_secs, inherit_env,
+        al,
+        working_dir,
+        allow_absolute,
+        allow_redirects,
+        max_output,
+        timeout_secs,
+        inherit_env,
     );
     let output = executor.execute(&program);
     let exit_code = output.exit_code;

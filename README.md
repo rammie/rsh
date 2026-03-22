@@ -1,27 +1,36 @@
 # rsh — Restricted Shell for AI Agents
 
-rsh is a command execution sandbox that gives AI agents safe, auditable access to shell commands. Instead of handing an agent a full shell (and hoping for the best), rsh parses and executes a restricted subset of shell syntax with enforced security boundaries.
+rsh is a command execution sandbox that gives AI agents safe, auditable access to shell commands. Instead of handing an agent a full shell (and hoping for the best), rsh parses the full bash syntax, validates every command against a security policy, and executes only what's explicitly permitted.
 
 ## Why rsh?
 
 AI agents need to run commands — searching code, reading files, inspecting systems. But giving an agent `bash -c` is giving it the keys to everything: arbitrary command chaining, file writes, network access, environment variable exfiltration.
 
-rsh closes that gap. It accepts a command string, parses it with a purpose-built recursive descent parser (not bash), and executes only what's explicitly permitted. Everything else is rejected with a structured JSON error before any process spawns.
+rsh closes that gap. It accepts a command string, parses it with [brush-parser](https://crates.io/crates/brush-parser) (a complete bash syntax parser), validates the entire AST against the security policy, and executes only what's allowed. Everything else is rejected with a structured JSON error before any process spawns.
 
 **What rsh enforces:**
 - Only allowlisted commands can run (default: read-only tools like `grep`, `cat`, `ls`, `find`)
-- No `&&`, `||`, backticks, `$()`, subshells, or shell keywords (`if`, `eval`, `for`, ...)
 - No file writes unless `--allow-redirects` is passed
 - No absolute paths or `..` traversal in arguments unless opted in
+- No function definitions, background execution (`&`), or process substitution
 - Environment is sanitized — child processes only see safe variables (`HOME`, `PATH`, etc.)
+- Variable references validated — only approved variables permitted (blocks `$SECRET`, `$API_KEY`)
+- Sub-command validation — `find -exec`, `xargs` sub-commands checked against allowlist
 - Commands time out after 30 seconds by default
 - Output is capped at 10MB by default
 
 **What rsh allows:**
 - Pipelines: `grep TODO src/*.rs | wc -l`
+- Boolean operators: `grep -q TODO file && echo found`, `cmd || echo fallback`
+- For loops: `for f in *.rs; do wc -l "$f"; done`
+- While/until loops: `while grep -q TODO file; do echo waiting; done`
+- If/then/else: `if grep -q TODO src/main.rs; then echo found; fi`
+- Command substitution: `wc -l $(find src -name '*.rs')`
+- Case statements: `case $TERM in xterm*) echo yes;; esac`
+- Brace groups and subshells: `{ echo a; echo b; }`, `(echo sub)`
 - Quoted strings: `grep 'hello world' file.txt`
 - Globs: `ls *.toml`, `find . -name '*.rs'`
-- Variable expansion: `echo $HOME`, `echo "path is $PWD"`
+- Variable expansion: `echo $HOME`, `echo "path is $PWD"`, `${VAR:-default}`
 - Semicolons: `ls src; wc -l Cargo.toml`
 - Redirects (opt-in): `echo hello >> output.txt`
 
@@ -44,6 +53,20 @@ rsh [OPTIONS] <COMMAND_STRING>
 rsh "ls -la"
 rsh "grep -r 'fn main' src/"
 rsh "cat Cargo.toml | head -n 5"
+
+# Boolean operators
+rsh "ls && echo done"
+rsh "grep -q TODO file || echo 'no TODOs'"
+
+# Loops
+rsh --dir ./project "for f in *.rs; do wc -l \$f; done"
+rsh --dir ./project "for f in \$(find src -name '*.rs'); do grep -c fn \$f; done"
+
+# Conditionals
+rsh --dir ./project "if grep -q 'fn main' src/main.rs; then echo found; fi"
+
+# Command substitution
+rsh --dir ./project "wc -l \$(find src -name '*.rs')"
 
 # Working directory
 rsh --dir /path/to/project "find . -name '*.rs' | wc -l"
@@ -116,10 +139,13 @@ rsh is **defense in depth** — multiple independent layers, each sufficient to 
 | **Path rejection** | Path separators in command names (`/usr/bin/grep`, `./exploit`) |
 | **Argument traversal** | `..` path components and absolute paths in arguments |
 | **Redirect gating** | File writes disabled by default; path traversal guard when enabled |
-| **Parser restrictions** | `&&`, `\|\|`, backticks, `$()`, subshells, keywords |
+| **AST validation** | Function definitions, background `&`, process substitution, here-docs |
+| **Variable approval** | Only approved env vars (`HOME`, `PATH`, etc.); blocks `$SECRET`, `$API_KEY` |
+| **Sub-command validation** | `find -exec`, `xargs` sub-commands checked against allowlist |
 | **Environment sanitization** | Only approved variables forwarded to child processes |
 | **Execution timeout** | Runaway or hanging commands killed after deadline |
 | **Output limits** | Truncation prevents memory exhaustion from large output |
+| **Loop limits** | While/until loops capped at 10,000 iterations |
 
 ### Trust boundaries
 
@@ -144,26 +170,25 @@ Sources 2 and 3 are trusted inputs. Ensure they are not writable by untrusted us
 input string
      │
      ▼
-  Parser  ──── rejects: &&, ||, $(), backticks, subshells, <, &
+ brush-parser  ──── parses full bash syntax into typed AST
      │
      ▼
-    AST   ──── Program { pipelines: [Pipeline { commands: [Command { name, args, redirects }] }] }
-     │
+  Validator   ──── walks AST, checks allowlist + security policy
+     │              rejects with structured JSON errors
      ▼
- Executor
-  ├─ validate()  ──── allowlist, redirect gating, variable approval, pipeline redirect position
-  ├─ expand()    ──── glob expansion, variable expansion, path traversal checks
-  └─ execute()   ──── spawn with sanitized env, pipe wiring, timeout, output capture
-     │
+  Executor    ──── runs validated AST: spawns processes, wires pipes,
+     │              handles loops/conditionals/substitution
      ▼
  JSON output
 ```
+
+The key principle: **parse everything, validate before executing.** brush-parser accepts all valid bash syntax. rsh's validator walks the AST and rejects anything outside the security policy. The executor then runs only validated programs.
 
 ## Development
 
 ```bash
 cargo build          # build
-cargo test           # run all tests (52 tests)
+cargo test           # run all tests (147 tests)
 cargo run -- "ls"    # run directly
 ```
 
