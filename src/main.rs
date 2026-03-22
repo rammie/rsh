@@ -93,6 +93,15 @@ fn main() {
                 }
                 working_dir = Some(args[i].clone());
             }
+            "-c" => {
+                // Accept -c for bash compatibility (rsh -c "command")
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: -c requires a command string");
+                    std::process::exit(2);
+                }
+                command_string = Some(args[i].clone());
+            }
             _ => {
                 if args[i].starts_with('-') {
                     eprintln!("error: unknown flag '{}'", args[i]);
