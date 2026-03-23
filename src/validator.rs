@@ -1,8 +1,8 @@
 /// Recursive AST security walker for brush-parser ASTs.
 ///
 /// Walks every node in a `brush_parser::ast::Program` and enforces:
-/// - Command allowlist (including sub-commands in find -exec, xargs, etc.)
-/// - Blocked flags (-delete, -ok, -okdir on find; -p/--interactive on xargs)
+/// - Command allowlist
+/// - Blocked flags (-delete, -ok, -okdir, -exec, -execdir on find; -x/--exec on fd)
 /// - Variable reference approval
 /// - Redirect gating (--allow-redirects)
 /// - Path traversal / absolute path checks
@@ -18,28 +18,14 @@ use crate::allowlist::{self, Allowlist};
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
-    ("find", &["-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]),
-];
-
-/// Flags blocked by prefix match (e.g., sed -i, sed -i.bak, sed -ibak all blocked).
-const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
-    ("sed", &["-i", "--in-place"]),
-    ("sort", &["-o", "--output"]),
-];
-
-/// Flags that trigger sub-command execution on specific commands.
-const EXEC_FLAGS: &[(&str, &[&str])] = &[
-    ("find", &["-exec", "-execdir"]),
+    ("find", &["-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-exec", "-execdir"]),
     ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
 ];
 
-/// xargs flags that consume the next token as their value.
-const XARGS_FLAGS_WITH_ARG: &[&str] = &[
-    "-I", "-L", "-n", "-P", "-s", "-d", "-E", "-J", "-R",
+/// Flags blocked by prefix match (e.g., sort -o, sort -ofoo all blocked).
+const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
+    ("sort", &["-o", "--output"]),
 ];
-
-/// xargs flags that are always blocked (interactive / dangerous).
-const XARGS_BLOCKED_FLAGS: &[&str] = &["-p", "--interactive"];
 
 
 /// Configuration passed into the validator.
@@ -204,15 +190,6 @@ impl<'a> ValidatorContext<'a> {
 
         // Check blocked flags (exact match and prefix match)
         self.check_blocked_flags(&cmd_name, &string_args, None)?;
-
-        // Validate sub-command execution flags (-exec, --exec, etc.)
-        self.validate_exec_flags(&cmd_name, &string_args)?;
-
-        // Validate xargs
-        self.validate_xargs(&cmd_name, &string_args)?;
-
-        // Check for sed write commands (w, W) inside sed expressions
-        self.check_sed_write(&cmd_name, &string_args)?;
 
         // Check argument paths for absolute paths and path traversal
         for arg in &string_args {
@@ -529,26 +506,7 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
-    // --- Sub-command validation (ported from executor.rs) ---
-
-    fn check_sub_command(&self, sub_cmd: &str, context: &str) -> Result<(), String> {
-        if sub_cmd.contains('/') || sub_cmd.contains('\\') || sub_cmd.starts_with('.') {
-            return Err(format!(
-                "sub-command '{}' in '{}' must be a bare command name, not a path",
-                sub_cmd, context
-            ));
-        }
-        if !self.allowlist.is_allowed(sub_cmd) {
-            return Err(format!(
-                "sub-command '{}' in '{}' not in allowlist (allowed: {})",
-                sub_cmd, context, self.allowlist.allowed_commands().join(", ")
-            ));
-        }
-        Ok(())
-    }
-
     /// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
-    /// If `context` is provided, it's included in the error message (for sub-commands).
     fn check_blocked_flags(&self, cmd: &str, args: &[&str], context: Option<&str>) -> Result<(), String> {
         if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd) {
             for arg in args {
@@ -575,116 +533,6 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
-    /// Check for dangerous sed commands inside sed expressions.
-    /// Blocks: w/W (write to file), r/R (read arbitrary file), e (execute shell command).
-    fn check_sed_write(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
-        if cmd != "sed" {
-            return Ok(());
-        }
-
-        let mut i = 0;
-        let mut found_script = false;
-        while i < args.len() {
-            let arg = args[i];
-            // Strip surrounding quotes — brush-parser preserves them in Word.value
-            let stripped = strip_quotes(arg);
-            if stripped == "-e" || stripped == "--expression" {
-                // Next arg is a sed expression
-                i += 1;
-                if i < args.len() {
-                    Self::check_sed_expr_for_dangerous_commands(strip_quotes(args[i]))?;
-                    found_script = true;
-                }
-            } else if stripped.starts_with("-e") {
-                // -eEXPR form
-                Self::check_sed_expr_for_dangerous_commands(&stripped[2..])?;
-                found_script = true;
-            } else if stripped == "-f" || stripped == "--file" {
-                // -f FILE — skip the file argument
-                i += 1;
-                found_script = true;
-            } else if stripped.starts_with('-') {
-                // Other flags (e.g., -n, --quiet, etc.)
-            } else if !found_script {
-                // First non-flag, non-option argument is the sed script
-                Self::check_sed_expr_for_dangerous_commands(&stripped)?;
-                found_script = true;
-            }
-            i += 1;
-        }
-
-        Ok(())
-    }
-
-    /// Check a single sed expression for dangerous commands:
-    /// - `w`/`W`: write to file (bypasses redirect restrictions)
-    /// - `r`/`R`: read arbitrary file (bypasses path restrictions)
-    /// - `e`: execute pattern space as shell command (arbitrary code execution)
-    fn check_sed_expr_for_dangerous_commands(expr: &str) -> Result<(), String> {
-        /// Dangerous single-character sed commands: (lowercase, uppercase_or_none, description).
-        const DANGEROUS_CMDS: &[(u8, Option<u8>, &str)] = &[
-            (b'w', Some(b'W'), "writes to a file"),
-            (b'r', Some(b'R'), "reads a file"),
-            (b'e', None,       "executes shell commands"),
-        ];
-
-        // Split on ';' and newlines to handle multi-command sed scripts
-        for segment in expr.split(|c: char| c == ';' || c == '\n') {
-            let trimmed = segment.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Strip leading address: digits, commas, ~, $, spaces,
-            // and /regex/ delimiters
-            let after_addr = strip_sed_address(trimmed);
-            let cmd_part = after_addr.trim_start_matches(|c: char| c == '{' || c == '}' || c == '!' || c == ' ' || c == '\t');
-
-            if let Some(&first) = cmd_part.as_bytes().first() {
-                // Check for dangerous single-letter commands (w/W, r/R, e)
-                for &(lo, hi, desc) in DANGEROUS_CMDS {
-                    if first == lo || hi.is_some_and(|h| first == h) {
-                        let rest = &cmd_part[1..];
-                        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('/') {
-                            return Err(format!(
-                                "'{}' command in sed expression {} and is not allowed",
-                                first as char, desc
-                            ));
-                        }
-                        break;
-                    }
-                }
-
-                // Check s/pattern/replacement/ flags for dangerous modifiers
-                if first == b's' && cmd_part.len() > 1 {
-                    let delim = cmd_part.as_bytes()[1];
-                    if let Some(flags_start) = find_s_command_flags(cmd_part, delim) {
-                        let flags = &cmd_part[flags_start..];
-                        if flags.contains('w') || flags.contains('W') {
-                            return Err(
-                                "'w' flag on sed s command writes to a file and is not allowed".to_string()
-                            );
-                        }
-                        if flags.contains('e') {
-                            return Err(
-                                "'e' flag on sed s command executes shell commands and is not allowed".to_string()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Validate a sub-command's flags and recursively check for nested -exec/xargs.
-    fn validate_sub_command_flags(&self, sub_cmd: &str, sub_args: &[&str], context: &str) -> Result<(), String> {
-        self.check_blocked_flags(sub_cmd, sub_args, Some(context))?;
-        self.validate_exec_flags(sub_cmd, sub_args)?;
-        self.validate_xargs(sub_cmd, sub_args)?;
-        self.check_sed_write(sub_cmd, sub_args)?;
-        Ok(())
-    }
-
     /// Check a regular command argument for absolute paths and path traversal.
     /// Operates on raw Word.value strings (may include quotes).
     fn check_arg_path(&self, arg: &str) -> Result<(), String> {
@@ -707,119 +555,6 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
-    fn check_sub_arg_path(&self, arg: &str, context: &str) -> Result<(), String> {
-        if arg.split('/').any(|seg| seg == "..") {
-            return Err(format!(
-                "path traversal ('..') in {} sub-command argument '{}' not allowed",
-                context, arg
-            ));
-        }
-        if arg.starts_with('/') && !self.config.allow_absolute {
-            return Err(format!(
-                "absolute path '{}' in {} sub-command not allowed (use --allow-absolute)",
-                arg, context
-            ));
-        }
-        Ok(())
-    }
-
-    fn validate_exec_flags(&self, cmd_name: &str, args: &[&str]) -> Result<(), String> {
-        let exec_flags: &[&str] = match EXEC_FLAGS.iter().find(|(c, _)| *c == cmd_name) {
-            Some((_, flags)) => flags,
-            None => return Ok(()),
-        };
-
-        let mut i = 0;
-        while i < args.len() {
-            if exec_flags.contains(&args[i]) {
-                let flag = args[i];
-                i += 1;
-
-                if i >= args.len() {
-                    return Err(format!(
-                        "'{}' on '{}' requires a command argument",
-                        flag, cmd_name
-                    ));
-                }
-
-                let context = format!("{} {}", cmd_name, flag);
-                let sub_cmd = args[i];
-                self.check_sub_command(sub_cmd, &context)?;
-
-                // Collect sub-command args (everything until terminator)
-                let sub_args_start = i + 1;
-                i += 1;
-                while i < args.len() {
-                    if matches!(args[i], ";" | "+" | "{}") {
-                        break;
-                    }
-                    self.check_sub_arg_path(args[i], &context)?;
-                    i += 1;
-                }
-
-                let sub_args = &args[sub_args_start..i];
-
-                self.validate_sub_command_flags(sub_cmd, sub_args, &context)?;
-            }
-            i += 1;
-        }
-
-        Ok(())
-    }
-
-    fn validate_xargs(&self, cmd_name: &str, args: &[&str]) -> Result<(), String> {
-        if cmd_name != "xargs" {
-            return Ok(());
-        }
-
-        let mut i = 0;
-        while i < args.len() {
-            let a = args[i];
-
-            if XARGS_BLOCKED_FLAGS.contains(&a) {
-                return Err(format!("'{}' flag on 'xargs' is not allowed", a));
-            }
-
-            if XARGS_FLAGS_WITH_ARG.contains(&a) {
-                i += 2;
-                continue;
-            }
-
-            // Short flags: combined like -I{} or clustered like -0rt
-            if a.starts_with('-') && a.len() > 1 && !a.starts_with("--") {
-                if XARGS_FLAGS_WITH_ARG.contains(&&a[0..2]) {
-                    i += 1;
-                    continue;
-                }
-                i += 1;
-                continue;
-            }
-
-            if a.starts_with("--") {
-                i += 1;
-                continue;
-            }
-
-            // First positional argument is the sub-command
-            self.check_sub_command(a, "xargs")?;
-
-            let sub_args = &args[i + 1..];
-            for arg in sub_args {
-                self.check_sub_arg_path(arg, "xargs")?;
-            }
-
-            self.validate_sub_command_flags(a, sub_args, "xargs")?;
-            return Ok(());
-        }
-
-        // No sub-command found — xargs defaults to echo
-        if !self.allowlist.is_allowed("echo") {
-            return Err(
-                "xargs with no sub-command defaults to 'echo', which is not in the allowlist".to_string()
-            );
-        }
-        Ok(())
-    }
 }
 
 /// Strip surrounding quotes from a Word.value (brush-parser preserves them).
@@ -832,105 +567,4 @@ fn strip_quotes(s: &str) -> &str {
         }
     }
     s
-}
-
-/// Strip a leading sed address (line numbers, ranges, /regex/) to get the command character.
-fn strip_sed_address(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    // Parse up to two addresses separated by comma
-    for _addr in 0..2 {
-        if i >= bytes.len() {
-            return &s[i..];
-        }
-        match bytes[i] {
-            b'0'..=b'9' => {
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            b'$' => {
-                i += 1;
-            }
-            b'/' => {
-                // /regex/ — skip to closing /
-                i += 1;
-                while i < bytes.len() && bytes[i] != b'/' {
-                    if bytes[i] == b'\\' {
-                        i += 1; // skip escaped char
-                    }
-                    i += 1;
-                }
-                if i < bytes.len() {
-                    i += 1; // skip closing /
-                }
-            }
-            b'\\' => {
-                // \cregexc — custom delimiter
-                i += 1;
-                if i < bytes.len() {
-                    let delim = bytes[i];
-                    i += 1;
-                    while i < bytes.len() && bytes[i] != delim {
-                        if bytes[i] == b'\\' {
-                            i += 1;
-                        }
-                        i += 1;
-                    }
-                    if i < bytes.len() {
-                        i += 1;
-                    }
-                }
-            }
-            _ => break,
-        }
-        // Check for ~ (GNU sed step: addr~step) or , (address range separator)
-        if i < bytes.len() && bytes[i] == b'~' {
-            i += 1;
-            // Skip the step number
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            break; // ~ is not followed by a second address
-        } else if i < bytes.len() && bytes[i] == b',' {
-            i += 1;
-        } else {
-            break;
-        }
-    }
-
-    // Skip optional whitespace between address and command
-    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
-        i += 1;
-    }
-
-    &s[i..]
-}
-
-/// Find the flags portion of a sed s/pattern/replacement/flags command.
-/// Returns the byte offset where flags begin, or None if the s command is malformed.
-fn find_s_command_flags(s: &str, delim: u8) -> Option<usize> {
-    let bytes = s.as_bytes();
-    // s + delim + pattern + delim + replacement + delim + flags
-    // Start after 's' and first delimiter
-    let mut i = 2; // skip 's' and delimiter
-    let mut delim_count = 0;
-
-    while i < bytes.len() && delim_count < 2 {
-        if bytes[i] == b'\\' {
-            i += 2; // skip escaped char
-            continue;
-        }
-        if bytes[i] == delim {
-            delim_count += 1;
-        }
-        i += 1;
-    }
-
-    if delim_count == 2 {
-        Some(i)
-    } else {
-        None
-    }
 }

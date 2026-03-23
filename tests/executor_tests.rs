@@ -366,8 +366,8 @@ fn test_redirect_on_non_final_pipeline_rejected() {
 // --- Dangerous sub-command arguments / -exec validation ---
 
 #[test]
-fn test_find_exec_with_allowlisted_command() {
-    // find -exec grep is safe — grep is in the allowlist
+fn test_find_exec_blocked() {
+    // find -exec is now unconditionally blocked
     let output = rsh_bin()
         .arg("--inherit-env")
         .arg("--dir")
@@ -375,76 +375,23 @@ fn test_find_exec_with_allowlisted_command() {
         .arg("find src -name '*.rs' -exec grep -l 'fn main' {} ';'")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("main.rs"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("-exec"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
-fn test_find_exec_with_plus_terminator() {
-    // find -exec cmd {} + (batch mode) should also work
+fn test_find_execdir_blocked() {
     let output = rsh_bin()
         .arg("--inherit-env")
-        .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("find src -name '*.rs' -exec wc -l {} +")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("total"));
-}
-
-#[test]
-fn test_find_exec_with_non_allowlisted_command_blocked() {
-    // find -exec rm should be rejected — rm is not in the allowlist
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -name '*.rs' -exec rm {} ';'")
+        .arg("find . -name '*.rs' -execdir echo {} ';'")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("rm"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_find_exec_with_path_command_blocked() {
-    // find -exec /usr/bin/grep — sub-command must be a bare name
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -exec /usr/bin/grep foo {} ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bare command name"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_find_execdir_with_allowlisted_command() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("find src -name '*.rs' -execdir echo {} ';'")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-}
-
-#[test]
-fn test_find_execdir_with_non_allowlisted_command_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -execdir bash -c 'echo pwned' ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bash"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(stderr.contains("-execdir"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -484,284 +431,72 @@ fn test_find_without_exec_allowed() {
 }
 
 #[test]
-fn test_xargs_with_allowlisted_subcmd() {
-    // xargs echo is safe — echo is in the allowlist (xargs is now in default allowlist)
+fn test_sed_not_in_default_allowlist() {
     let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo hello | xargs echo")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello"));
-}
-
-#[test]
-fn test_xargs_with_non_allowlisted_subcmd() {
-    // xargs rm should be rejected
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo foo | xargs rm")
+        .arg("echo hello | sed 's/hello/world/'")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("rm"), "stderr was: {}", stderr);
+    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
     assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
-fn test_xargs_with_path_subcmd_blocked() {
+fn test_xargs_not_in_default_allowlist() {
     let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo foo | xargs /usr/bin/grep foo")
+        .arg("echo hello | xargs echo")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("bare command name"), "stderr was: {}", stderr);
+    assert!(stderr.contains("xargs"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
 }
 
 #[test]
-fn test_xargs_interactive_flag_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo foo | xargs -p echo")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-p"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_xargs_with_flags_and_allowlisted_subcmd() {
-    // xargs -I {} grep -l {} should work with flags parsed correctly
+fn test_command_substitution_with_find() {
     let output = rsh_bin()
         .arg("--inherit-env")
         .arg("--dir")
         .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("echo Cargo.toml | xargs -I {} grep -l 'rsh' {}")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-}
-
-#[test]
-fn test_xargs_no_subcmd_defaults_to_echo() {
-    // xargs with no command defaults to echo
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo hello | xargs")
+        .arg("grep -l 'fn main' $(find src -name '*.rs')")
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("hello"));
+    assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
 }
 
 #[test]
-fn test_xargs_subcmd_path_traversal_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo foo | xargs grep foo ../../etc/passwd")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_find_exec_subcmd_path_traversal_blocked() {
-    // The sub-command args should also be checked for path traversal
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -exec grep foo ../../etc/passwd {} ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
-}
-
-// --- Sub-command flag validation bypass ---
-
-#[test]
-fn test_find_exec_sed_inplace_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -name '*.txt' -exec sed -i 's/foo/bar/' {} ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
-    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
-    assert!(stderr.contains("in place"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_xargs_sed_inplace_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo file.txt | xargs sed -i 's/foo/bar/'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
-    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
-    assert!(stderr.contains("in place"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_find_exec_find_delete_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("find . -exec find /tmp -delete ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-delete"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_find_exec_grep_still_works() {
-    // grep with no blocked flags should still be allowed in -exec
+fn test_for_loop_with_find() {
     let output = rsh_bin()
         .arg("--inherit-env")
         .arg("--dir")
         .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("find src -name '*.rs' -exec grep -l 'validate' {} ';'")
+        .arg("for f in $(find src -name '*.rs' -type f); do wc -l \"$f\"; done")
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
 }
 
 #[test]
-fn test_nested_find_exec_sed_inplace_blocked() {
-    // find -exec find -exec sed -i — nested chain must be caught
+fn test_fd_exec_blocked() {
+    // fd --exec should be blocked
     let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--allow-absolute")
-        .arg("find . -exec find /tmp -exec sed -i 's/x/y/' {} ';' ';'")
+        .arg("--allow")
+        .arg("fd,grep")
+        .arg("fd -e rs --exec grep -l 'fn main'")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
-    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
+    assert!(stderr.contains("--exec"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
-#[test]
-fn test_xargs_find_exec_sed_inplace_blocked() {
-    // xargs find -exec sed -i — cross-tool nested chain
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("echo dir | xargs find -exec sed -i 's/x/y/' {} ';'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
-    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
-}
-
-// ─── Sandbox escape regression tests ───
-
-// --- sed w (file write bypass) ---
-
-#[test]
-fn test_sed_w_command_blocked() {
-    let output = rsh_bin()
-        .arg(r#"echo test | sed "w /tmp/out""#)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_sed_w_single_quoted_blocked() {
-    let output = rsh_bin()
-        .arg("echo test | sed 'w /tmp/out'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_sed_address_w_blocked() {
-    let output = rsh_bin()
-        .arg(r#"echo test | sed "1w /tmp/out""#)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_sed_e_w_blocked() {
-    let output = rsh_bin()
-        .arg(r#"echo test | sed -e "w /tmp/out""#)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_sed_s_w_flag_blocked() {
-    // sed s/pattern/replacement/w writes matches to a file
-    let output = rsh_bin()
-        .arg(r#"echo hello | sed "s/hello/world/w /tmp/out""#)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_sed_normal_substitution_allowed() {
-    let output = rsh_bin()
-        .arg(r#"echo hello | sed "s/hello/world/""#)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "world");
-}
-
-#[test]
-fn test_sed_word_containing_w_allowed() {
-    // 's/www/xxx/' should not be flagged — the w is inside the pattern, not a command
-    let output = rsh_bin()
-        .arg(r#"echo www | sed "s/www/xxx/""#)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "xxx");
-}
-
-#[test]
-fn test_find_exec_sed_w_blocked() {
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg(r#"find . -exec sed "w /tmp/out" {} ;"#)
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writes to a file"), "stderr was: {}", stderr);
-}
 
 // --- sort -o / --output (file write bypass) ---
 
@@ -899,173 +634,6 @@ fn test_redirect_to_real_file_still_blocked_without_flag() {
         "stderr was: {}", stderr);
 }
 
-// --- Sandbox escape helpers & tests ---
-
-/// Run a command in a tempdir seeded with the given files and assert it is rejected.
-/// Returns the tempdir (for further assertions) and the process output.
-fn assert_rejected_in_dir(
-    files: &[(&str, &str)],
-    cmd: &str,
-) -> (tempfile::TempDir, std::process::Output) {
-    let dir = tempfile::tempdir().unwrap();
-    for (name, content) in files {
-        std::fs::write(dir.path().join(name), content).unwrap();
-    }
-    let output = rsh_bin()
-        .arg("--dir")
-        .arg(dir.path())
-        .arg(cmd)
-        .output()
-        .unwrap();
-    assert!(!output.status.success(),
-        "expected rejection for `{cmd}`, stderr: {}",
-        String::from_utf8_lossy(&output.stderr));
-    (dir, output)
-}
-
-// --- xargs stdin argument injection ---
-//
-// xargs constructs command lines from stdin at runtime.  With --exec rewriting,
-// every command xargs spawns goes through a child rsh that validates the full argv.
-
-#[test]
-fn test_xargs_stdin_injects_sed_i_flag() {
-    // The child rsh rejects sed -ibak (prefix-blocked flag)
-    let (dir, _) = assert_rejected_in_dir(
-        &[("target.txt", "original\n")],
-        "echo '-ibak' | xargs -I{} sed {} 's/original/HACKED/' target.txt",
-    );
-    let content = std::fs::read_to_string(dir.path().join("target.txt")).unwrap();
-    assert_eq!(content, "original\n", "file was modified: {content}");
-}
-
-#[test]
-fn test_xargs_stdin_injects_sed_i_flag_simple() {
-    let (dir, _) = assert_rejected_in_dir(
-        &[("target.txt", "original\n")],
-        "echo '-ibak s/original/HACKED/ target.txt' | xargs sed",
-    );
-    let content = std::fs::read_to_string(dir.path().join("target.txt")).unwrap();
-    assert_eq!(content, "original\n", "file was modified: {content}");
-}
-
-#[test]
-fn test_xargs_stdin_injects_find_delete() {
-    let (dir, _) = assert_rejected_in_dir(
-        &[("target.txt", "keep me\n")],
-        "echo '-delete' | xargs -I{} find . -name target.txt {}",
-    );
-    assert!(dir.path().join("target.txt").exists(), "file was deleted");
-}
-
-#[test]
-fn test_xargs_stdin_injects_sort_output() {
-    let (dir, _) = assert_rejected_in_dir(
-        &[("input.txt", "banana\napple\n")],
-        "echo '--output=stolen.txt input.txt' | xargs sort",
-    );
-    assert!(!dir.path().join("stolen.txt").exists(), "file was created");
-}
-
-// --- sed brace-group write command bypass ---
-//
-// check_sed_expr_for_write must detect `w`/`W` commands even when wrapped in
-// `{`/`}` brace groups or preceded by `!` negation.
-
-#[test]
-fn test_sed_brace_group_w_bypass() {
-    let (dir, _) = assert_rejected_in_dir(
-        &[("input.txt", "secret data\n")],
-        "sed -n '{ w output.txt\n}' input.txt",
-    );
-    assert!(!dir.path().join("output.txt").exists(), "output.txt was created");
-}
-
-#[test]
-fn test_sed_brace_group_w_with_address_bypass() {
-    let (dir, _) = assert_rejected_in_dir(
-        &[("input.txt", "secret data\n")],
-        "sed -n '1{ w output.txt\n}' input.txt",
-    );
-    assert!(!dir.path().join("output.txt").exists(), "output.txt was created");
-}
-
-// --- --exec mode tests ---
-
-#[test]
-fn test_exec_flag_basic() {
-    let output = rsh_bin()
-        .arg("--exec")
-        .arg("echo")
-        .arg("hello")
-        .arg("world")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "hello world");
-}
-
-#[test]
-fn test_exec_flag_validates() {
-    // --exec should still validate: sed -i should be rejected
-    let output = rsh_bin()
-        .arg("--exec")
-        .arg("sed")
-        .arg("-i")
-        .arg("s/foo/bar/")
-        .arg("file.txt")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("-i"), "stderr was: {}", stderr);
-}
-
-#[test]
-fn test_exec_flag_rejects_non_allowlisted() {
-    let output = rsh_bin()
-        .arg("--exec")
-        .arg("rm")
-        .arg("file.txt")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
-}
-
-// --- xargs/find --exec rewrite integration tests ---
-
-#[test]
-fn test_xargs_exec_rewrite_works() {
-    // A safe xargs pipeline should work end-to-end via the rsh child rewrite
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("echo Cargo.toml | xargs grep -l rsh")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Cargo.toml"), "stdout was: {}", stdout);
-}
-
-#[test]
-fn test_find_exec_rewrite_works() {
-    // find -exec through the rewrite should still work for safe commands
-    let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("find src -name '*.rs' -exec grep -l 'fn main' {} ';'")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
-}
 
 // ============================================================
 // Sandbox escape tests
@@ -1135,88 +703,6 @@ fn test_escape_for_loop_grep_arbitrary_files() {
     );
 }
 
-#[test]
-fn test_escape_sed_r_command_reads_arbitrary_file() {
-    // ESCAPE: sed's 'r' command reads a file and inserts its contents into output.
-    // The file path is inside the sed expression, bypassing path validation.
-    // `cat /etc/hosts` is blocked, but `echo x | sed 'r /etc/hosts'` is not.
-    let output = rsh_bin()
-        .arg("echo x | sed 'r /etc/hosts'")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "ESCAPE: sed r command read bypass succeeded. stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        stderr.contains("not allowed"),
-        "expected 'not allowed' error, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_escape_sed_r_with_address() {
-    // sed r with an address prefix: `1r /etc/hosts`
-    let output = rsh_bin()
-        .arg("echo x | sed '1r /etc/hosts'")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "ESCAPE: sed addressed r command read bypass succeeded. stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(
-        stderr.contains("not allowed"),
-        "expected 'not allowed' error, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_escape_sed_e_command_executes_arbitrary_code() {
-    // ESCAPE: GNU sed's 'e' command executes the pattern space as a shell command.
-    // The validator does not check for 'e' in sed expressions.
-    // On macOS (BSD sed) this errors at runtime, but on Linux (GNU sed) it would
-    // execute arbitrary commands, completely bypassing the sandbox.
-    let output = rsh_bin()
-        .arg("echo 'echo ESCAPED' | sed 'e'")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // The VALIDATOR (rsh:) should reject this before sed even runs.
-    // BSD sed also errors, but that's not sufficient — on GNU sed it would execute.
-    assert!(
-        stderr.contains("rsh:") && stderr.contains("not allowed"),
-        "ESCAPE: sed e command was not blocked by rsh validator. \
-         stderr: {}, stdout: {}",
-        stderr, stdout
-    );
-}
-
-#[test]
-fn test_escape_sed_s_e_flag_executes_replacement() {
-    // ESCAPE: GNU sed's s///e flag executes the replacement string as a command.
-    // The validator checks for 'w'/'W' in s-command flags but not 'e'.
-    let output = rsh_bin()
-        .arg("echo x | sed 's/x/echo ESCAPED/e'")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Must be blocked by rsh's validator, not just by BSD sed's runtime error
-    assert!(
-        stderr.contains("rsh:") && stderr.contains("not allowed"),
-        "ESCAPE: sed s///e flag was not blocked by rsh validator. \
-         stderr: {}, stdout: {}",
-        stderr, stdout
-    );
-}
 
 #[test]
 fn test_escape_find_fprint_writes_file() {

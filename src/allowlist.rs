@@ -18,12 +18,12 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "cat", "bat", "head", "tail", "less",
     // List/inspect
     "ls", "eza", "stat", "file", "du", "wc", "pwd", "which",
-    // Text processing (read-only — sed -i is blocked separately)
-    "sort", "uniq", "cut", "tr", "sed", "diff", "comm",
+    // Text processing (read-only)
+    "sort", "uniq", "cut", "tr", "diff", "comm",
     // Path utilities
     "basename", "dirname", "realpath",
     // Misc
-    "echo", "date", "true", "false", "test", "xargs",
+    "echo", "date", "true", "false", "test",
 ];
 
 /// Environment variables approved for use in command arguments and expansion.
