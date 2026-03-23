@@ -37,13 +37,17 @@ Supported syntax:
 - Command substitution: wc -l $(find src -name '*.rs')
 - Globs, quoted strings, semicolons, case statements
 
+IMPORTANT — use relative paths only:
+- Absolute paths (/repo, /home, /tmp, etc.) are REJECTED — always use . or relative paths
+- Path traversal (..) is REJECTED
+- Variable references ($HOME, etc.) and tilde (~) are REJECTED in arguments
+- To explore from the working directory: ls ., find . -name '*.ts', tree .
+
 Not allowed:
 - awk, sed, xargs (use cut, grep, command substitution, and for-loops instead)
 - find -exec / -execdir (use command substitution or for-loops instead)
 - Commands outside the allowlist above
-- Function definitions, background execution (&), process substitution
-- Path traversal (..) in arguments
-- Absolute paths, tilde (~), and variable references ($HOME, etc.) in arguments{redirect_note}
+- Function definitions, background execution (&), process substitution{redirect_note}
 
 Patterns for multi-step reads:
 ",
@@ -55,11 +59,14 @@ Patterns for multi-step reads:
     );
     if has_rg {
         println!("  rg \"pattern\" -t rust -C 3                # search by content + file type");
+        println!("  rg \"pattern\" -g \"*.ts\" .                 # search with glob filter (NOT --include)");
+        println!("  rg \"pattern\" -l .                         # list matching files only");
     }
     println!("  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type");
     if has_fd {
         println!("  fd -e rs | head -20                        # find files by extension");
     }
+    println!("  tree -L 2 .                                # overview of directory structure");
     println!("  grep pattern $(find . -name \"*.rs\")         # find by name, then search");
     println!(
         "  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect"

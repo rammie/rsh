@@ -13,7 +13,7 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "grep", "rg", "ugrep", // Find files
     "find", "fd", // Read files
     "cat", "bat", "head", "tail", "less", // List/inspect
-    "ls", "eza", "stat", "file", "du", "wc", "pwd", "which",
+    "ls", "eza", "tree", "stat", "file", "du", "wc", "pwd", "which",
     // Text processing (read-only)
     "sort", "uniq", "cut", "tr", "diff", "comm", // Path utilities
     "basename", "dirname", "realpath", // Misc
