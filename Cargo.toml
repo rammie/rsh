@@ -10,6 +10,11 @@ os_pipe = "1"
 brush-parser = "0.3"
 libc = "0.2"
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
 [[test]]
 name = "parser_tests"
 path = "tests/parser_tests.rs"
