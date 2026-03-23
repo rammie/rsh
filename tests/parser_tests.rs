@@ -12,7 +12,11 @@ fn test_and_or_now_supported() {
         .arg("echo hello && echo world")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
     assert!(stdout.contains("world"));
@@ -28,7 +32,11 @@ fn test_or_operator() {
         .arg("false || echo fallback")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("fallback"));
 }
@@ -36,25 +44,27 @@ fn test_or_operator() {
 #[test]
 fn test_backtick_substitution_validates_inner_command() {
     // Backticks now parse; the inner command is validated against the allowlist
-    let output = rsh_bin()
-        .arg("echo `whoami`")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo `whoami`").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("whoami") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("whoami") && stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_command_substitution_validates_inner_command() {
     // $() now parses; the inner command is validated against the allowlist
-    let output = rsh_bin()
-        .arg("echo $(whoami)")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo $(whoami)").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("whoami") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("whoami") && stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -67,22 +77,27 @@ fn test_command_substitution_with_allowed_command() {
         .arg("echo $(echo inner)")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "inner");
 }
 
 #[test]
 fn test_parse_error_eval() {
-    let output = rsh_bin()
-        .arg("eval echo hi")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("eval echo hi").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     // eval is rejected at the allowlist level
     assert!(stderr.contains("eval"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -94,7 +109,11 @@ fn test_keywords_in_quotes_allowed() {
         .arg("grep 'if' src/main.rs")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -106,7 +125,11 @@ fn test_and_in_quotes_allowed() {
         .arg("grep '&&' src/validator.rs")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -119,7 +142,11 @@ fn test_if_then_fi_supported() {
         .arg("if true; then echo yes; fi")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "yes");
 }
@@ -132,17 +159,18 @@ fn test_for_loop_supported() {
         .arg("for x in a b c; do echo $x; done")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("a\nb\nc"));
 }
 
 #[test]
 fn test_allowlist_rejection() {
-    let output = rsh_bin()
-        .arg("curl http://example.com")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("curl http://example.com").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not in allowlist"));
@@ -150,10 +178,7 @@ fn test_allowlist_rejection() {
 
 #[test]
 fn test_empty_input() {
-    let output = rsh_bin()
-        .arg("")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.is_empty(), "expected an error message on stderr");
@@ -161,10 +186,7 @@ fn test_empty_input() {
 
 #[test]
 fn test_function_definition_rejected() {
-    let output = rsh_bin()
-        .arg("foo() { echo hi; }")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("foo() { echo hi; }").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("function"), "stderr was: {}", stderr);
@@ -186,13 +208,14 @@ fn test_background_execution_rejected() {
 #[test]
 fn test_unapproved_var_in_substitution_rejected() {
     // $() containing unapproved variable reference should be caught
-    let output = rsh_bin()
-        .arg("echo $(echo $SECRET)")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo $(echo $SECRET)").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("SECRET") && stderr.contains("not allowed"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("SECRET") && stderr.contains("not allowed"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -204,5 +227,9 @@ fn test_nested_disallowed_command_in_substitution() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("curl") && stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("curl") && stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }

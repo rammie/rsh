@@ -1,5 +1,4 @@
 /// Glob expansion scoped to a working directory.
-
 use std::path::Path;
 
 /// Returns true if a string contains unescaped glob metacharacters.
@@ -7,7 +6,9 @@ pub fn is_glob(s: &str) -> bool {
     let mut chars = s.chars();
     while let Some(ch) = chars.next() {
         match ch {
-            '\\' => { chars.next(); } // skip escaped char
+            '\\' => {
+                chars.next();
+            } // skip escaped char
             '*' | '?' | '[' => return true,
             _ => {}
         }
@@ -17,15 +18,9 @@ pub fn is_glob(s: &str) -> bool {
 
 /// Expand a glob pattern relative to the working directory.
 /// Absolute patterns and path traversal are always rejected.
-pub fn expand_glob(
-    pattern: &str,
-    working_dir: &Path,
-) -> Result<Vec<String>, String> {
+pub fn expand_glob(pattern: &str, working_dir: &Path) -> Result<Vec<String>, String> {
     if pattern.starts_with('/') {
-        return Err(format!(
-            "absolute glob pattern '{}' not allowed",
-            pattern
-        ));
+        return Err(format!("absolute glob pattern '{}' not allowed", pattern));
     }
 
     // Reject patterns with .. path traversal
@@ -38,12 +33,15 @@ pub fn expand_glob(
 
     let full_pattern = working_dir.join(pattern);
 
-    let pattern_str = full_pattern.to_str().ok_or("invalid UTF-8 in glob pattern")?;
+    let pattern_str = full_pattern
+        .to_str()
+        .ok_or("invalid UTF-8 in glob pattern")?;
 
     let entries = glob::glob(pattern_str)
         .map_err(|e| format!("invalid glob pattern '{}': {}", pattern, e))?;
 
-    let canon_working = working_dir.canonicalize()
+    let canon_working = working_dir
+        .canonicalize()
         .map_err(|e| format!("cannot canonicalize working dir: {}", e))?;
 
     let mut results = Vec::new();
@@ -57,7 +55,8 @@ pub fn expand_glob(
                     }
                 }
                 // Convert back to relative path
-                let display_path = path.strip_prefix(working_dir)
+                let display_path = path
+                    .strip_prefix(working_dir)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();

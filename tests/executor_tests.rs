@@ -6,11 +6,12 @@ fn rsh_bin() -> Command {
 
 #[test]
 fn test_simple_echo() {
-    let output = rsh_bin()
-        .arg("echo hello world")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo hello world").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "hello world");
 }
@@ -21,7 +22,11 @@ fn test_pipeline() {
         .arg("echo -e 'line1\nline2\nline3' | head -n 1")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -32,7 +37,11 @@ fn test_pwd() {
         .arg("pwd")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stdout = stdout.trim();
     // On macOS, /tmp is a symlink to /private/tmp
@@ -59,22 +68,24 @@ fn test_custom_allowlist() {
 
 #[test]
 fn test_output_structure() {
-    let output = rsh_bin()
-        .arg("echo test")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo test").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty());
 }
 
 #[test]
 fn test_semicolons_multiple_pipelines() {
-    let output = rsh_bin()
-        .arg("echo hello; echo world")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo hello; echo world").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
     assert!(stdout.contains("world"));
@@ -88,17 +99,18 @@ fn test_grep_with_quoted_pattern() {
         .arg("grep -r 'fn main' src/main.rs")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("fn main"));
 }
 
 #[test]
 fn test_variable_expansion_blocked() {
-    let output = rsh_bin()
-        .arg("echo $PWD")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo $PWD").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
@@ -106,10 +118,7 @@ fn test_variable_expansion_blocked() {
 
 #[test]
 fn test_unapproved_variable() {
-    let output = rsh_bin()
-        .arg("echo $SECRET_KEY")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo $SECRET_KEY").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
@@ -123,17 +132,18 @@ fn test_glob_expansion() {
         .arg("ls *.toml")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Cargo.toml"), "stdout was: {}", stdout);
 }
 
 #[test]
 fn test_double_quoted_variable_blocked() {
-    let output = rsh_bin()
-        .arg(r#"echo "hello $PWD""#)
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg(r#"echo "hello $PWD""#).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
@@ -145,15 +155,16 @@ fn test_three_stage_pipeline() {
         .arg("echo -e 'aaa\nbbb\nccc' | grep -c ''")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn test_path_in_command_rejected() {
-    let output = rsh_bin()
-        .arg("/usr/bin/grep foo")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("/usr/bin/grep foo").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not in allowlist"));
@@ -161,13 +172,14 @@ fn test_path_in_command_rejected() {
 
 #[test]
 fn test_redirects_blocked_by_default() {
-    let output = rsh_bin()
-        .arg("echo hi > out.txt")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hi > out.txt").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("redirects are not allowed"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("redirects are not allowed"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -185,7 +197,11 @@ fn test_redirect_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("escapes working directory"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("escapes working directory"),
+        "stderr was: {}",
+        stderr
+    );
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
@@ -203,7 +219,11 @@ fn test_append_redirect() {
         .arg("echo hello >> out.txt")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Run again to append
     let output2 = rsh_bin()
@@ -213,7 +233,11 @@ fn test_append_redirect() {
         .arg("echo world >> out.txt")
         .output()
         .unwrap();
-    assert!(output2.status.success(), "stderr: {}", String::from_utf8_lossy(&output2.stderr));
+    assert!(
+        output2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
 
     let content = std::fs::read_to_string(workdir.join("out.txt")).unwrap();
     assert!(content.contains("hello"), "content was: {}", content);
@@ -235,7 +259,11 @@ fn test_max_output_multibyte_no_panic() {
         .unwrap();
     // Should not panic; stderr should indicate truncation
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("output truncated"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("output truncated"),
+        "stderr was: {}",
+        stderr
+    );
     // stdout should be bounded and valid UTF-8
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.len() <= 10, "stdout too long: {}", stdout.len());
@@ -244,10 +272,7 @@ fn test_max_output_multibyte_no_panic() {
 // --- S2: argument path traversal ---
 #[test]
 fn test_arg_path_traversal_rejected() {
-    let output = rsh_bin()
-        .arg("cat ../../etc/passwd")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("cat ../../etc/passwd").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
@@ -255,10 +280,7 @@ fn test_arg_path_traversal_rejected() {
 
 #[test]
 fn test_arg_absolute_path_rejected() {
-    let output = rsh_bin()
-        .arg("cat /etc/passwd")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("cat /etc/passwd").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("absolute path"), "stderr was: {}", stderr);
@@ -274,7 +296,11 @@ fn test_arg_relative_path_ok() {
         .arg("cat src/main.rs")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("fn main"));
 }
@@ -286,7 +312,11 @@ fn test_flags_not_rejected_as_paths() {
         .arg("ls -la")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // --- S3: glob traversal ---
@@ -327,9 +357,17 @@ fn test_env_sanitized_by_default() {
         .arg("env")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.contains("RSH_TEST_SECRET"), "env leaked: {}", stdout);
+    assert!(
+        !stdout.contains("RSH_TEST_SECRET"),
+        "env leaked: {}",
+        stdout
+    );
     assert!(!stdout.contains("supersecret"), "secret leaked: {}", stdout);
 }
 
@@ -343,9 +381,17 @@ fn test_env_inherited_with_flag() {
         .arg("env")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("RSH_TEST_VISIBLE"), "env not inherited: {}", stdout);
+    assert!(
+        stdout.contains("RSH_TEST_VISIBLE"),
+        "env not inherited: {}",
+        stdout
+    );
 }
 
 // --- S7: non-final pipeline redirect ---
@@ -358,7 +404,11 @@ fn test_redirect_on_non_final_pipeline_rejected() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("non-final pipeline command"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("non-final pipeline command"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 // --- Dangerous sub-command arguments / -exec validation ---
@@ -425,7 +475,11 @@ fn test_find_without_exec_allowed() {
         .arg("find src -name '*.rs' -type f")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -437,19 +491,24 @@ fn test_sed_not_in_default_allowlist() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("sed"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
 fn test_xargs_not_in_default_allowlist() {
-    let output = rsh_bin()
-        .arg("echo hello | xargs echo")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello | xargs echo").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("xargs"), "stderr was: {}", stderr);
-    assert!(stderr.contains("not in allowlist"), "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -461,7 +520,11 @@ fn test_command_substitution_with_find() {
         .arg("grep -l 'fn main' $(find src -name '*.rs')")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
 }
@@ -475,7 +538,11 @@ fn test_for_loop_with_find() {
         .arg("for f in $(find src -name '*.rs' -type f); do wc -l \"$f\"; done")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
 }
@@ -494,7 +561,6 @@ fn test_fd_exec_blocked() {
     assert!(stderr.contains("--exec"), "stderr was: {}", stderr);
     assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
-
 
 // --- sort -o / --output (file write bypass) ---
 
@@ -522,11 +588,12 @@ fn test_sort_output_long_flag_blocked() {
 
 #[test]
 fn test_sort_normal_usage_allowed() {
-    let output = rsh_bin()
-        .arg("echo -e 'b\na\nc' | sort")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo -e 'b\na\nc' | sort").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // --- Tilde/variable expansion path traversal bypass ---
@@ -539,10 +606,16 @@ fn test_tilde_path_traversal_blocked() {
         .arg("cat ~/../../etc/hosts")
         .output()
         .unwrap();
-    assert!(!output.status.success(), "tilde+traversal should be blocked");
+    assert!(
+        !output.status.success(),
+        "tilde+traversal should be blocked"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
-        "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -553,10 +626,12 @@ fn test_variable_expansion_path_traversal_blocked() {
         .arg("cat $HOME/../../etc/hosts")
         .output()
         .unwrap();
-    assert!(!output.status.success(), "$HOME+traversal should be blocked");
+    assert!(
+        !output.status.success(),
+        "$HOME+traversal should be blocked"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not allowed"),
-        "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -567,10 +642,12 @@ fn test_double_quoted_variable_path_traversal_blocked() {
         .arg(r#"cat "$HOME/../../etc/hosts""#)
         .output()
         .unwrap();
-    assert!(!output.status.success(), "quoted $HOME+traversal should be blocked");
+    assert!(
+        !output.status.success(),
+        "quoted $HOME+traversal should be blocked"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not allowed"),
-        "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -581,20 +658,23 @@ fn test_for_loop_tilde_traversal_blocked() {
         .arg("for f in ~/../../etc/hosts; do cat $f; done")
         .output()
         .unwrap();
-    assert!(!output.status.success(), "for-loop tilde+traversal should be blocked");
+    assert!(
+        !output.status.success(),
+        "for-loop tilde+traversal should be blocked"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
-        "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
+        "stderr was: {}",
+        stderr
+    );
 }
 
 // --- all env vars and tilde blocked ---
 
 #[test]
 fn test_home_var_blocked() {
-    let output = rsh_bin()
-        .arg("echo $HOME")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo $HOME").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
@@ -602,10 +682,7 @@ fn test_home_var_blocked() {
 
 #[test]
 fn test_tilde_blocked() {
-    let output = rsh_bin()
-        .arg("echo ~")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo ~").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("tilde"), "stderr was: {}", stderr);
@@ -620,7 +697,11 @@ fn test_for_loop_variable_allowed() {
         .arg(r#"for f in src/*.rs; do echo "$f"; done"#)
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("src/main.rs"), "stdout was: {}", stdout);
 }
@@ -629,47 +710,49 @@ fn test_for_loop_variable_allowed() {
 
 #[test]
 fn test_redirect_to_dev_null_allowed_without_flag() {
-    let output = rsh_bin()
-        .arg("echo hello > /dev/null")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo hello > /dev/null").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     // stdout should be empty since it was redirected to /dev/null
     assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
 }
 
 #[test]
 fn test_stderr_to_dev_null_allowed() {
-    let output = rsh_bin()
-        .arg("echo hello 2>/dev/null")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo hello 2>/dev/null").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
 fn test_fd_duplication_allowed_without_flag() {
-    let output = rsh_bin()
-        .arg("echo hello 2>&1")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let output = rsh_bin().arg("echo hello 2>&1").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("hello"));
 }
 
 #[test]
 fn test_redirect_to_real_file_still_blocked_without_flag() {
-    let output = rsh_bin()
-        .arg("echo hello > /tmp/out.txt")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello > /tmp/out.txt").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("redirect") || stderr.contains("not allowed"),
-        "stderr was: {}", stderr);
+    assert!(
+        stderr.contains("redirect") || stderr.contains("not allowed"),
+        "stderr was: {}",
+        stderr
+    );
 }
-
 
 // ============================================================
 // Sandbox escape tests
@@ -735,7 +818,6 @@ fn test_escape_for_loop_grep_arbitrary_files() {
         stderr
     );
 }
-
 
 #[test]
 fn test_escape_find_fprint_writes_file() {

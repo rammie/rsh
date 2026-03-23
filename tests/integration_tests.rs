@@ -24,8 +24,12 @@ fn run(cmd: &str) -> std::process::Output {
 /// Helper: run and assert success, return stdout.
 fn run_ok(cmd: &str) -> String {
     let output = run(cmd);
-    assert!(output.status.success(), "command '{}' failed.\nstderr: {}", cmd,
-        String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "command '{}' failed.\nstderr: {}",
+        cmd,
+        String::from_utf8_lossy(&output.stderr)
+    );
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
@@ -106,7 +110,11 @@ fn test_grep_context_lines() {
     // -A 2: show 2 lines after each match
     let out = run_ok("grep -A 2 'fn main' src/main.rs");
     let lines: Vec<&str> = out.lines().collect();
-    assert!(lines.len() >= 3, "expected context lines, got {} lines", lines.len());
+    assert!(
+        lines.len() >= 3,
+        "expected context lines, got {} lines",
+        lines.len()
+    );
 }
 
 #[test]
@@ -133,7 +141,10 @@ fn test_grep_pipe_in_quotes() {
 #[test]
 fn test_grep_no_match_exit_code() {
     let output = run("grep 'ZZZZZ_NONEXISTENT_PATTERN_ZZZZZ' src/main.rs");
-    assert!(!output.status.success(), "grep no-match should exit non-zero");
+    assert!(
+        !output.status.success(),
+        "grep no-match should exit non-zero"
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout, "");
 }
@@ -157,7 +168,9 @@ fn test_find_by_type_file() {
     let out = run_ok("find src -type f -name '*.rs'");
     for line in out.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         assert!(trimmed.ends_with(".rs"), "unexpected file: {}", trimmed);
     }
 }
@@ -173,7 +186,10 @@ fn test_find_maxdepth() {
     let out = run_ok("find . -maxdepth 1 -type f -name '*.toml'");
     assert!(out.contains("Cargo.toml"));
     // Should not find files in subdirectories
-    assert!(!out.contains("src/"), "maxdepth 1 should not recurse into src/");
+    assert!(
+        !out.contains("src/"),
+        "maxdepth 1 should not recurse into src/"
+    );
 }
 
 #[test]
@@ -225,7 +241,13 @@ fn test_grep_pipe_head() {
     // Get first 3 function definitions
     let out = run_ok("grep 'fn ' src/executor.rs | head -n 3");
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 3, "expected 3 lines, got {}: {:?}", lines.len(), lines);
+    assert_eq!(
+        lines.len(),
+        3,
+        "expected 3 lines, got {}: {:?}",
+        lines.len(),
+        lines
+    );
 }
 
 #[test]
@@ -233,7 +255,13 @@ fn test_grep_pipe_tail() {
     // Get last 2 function definitions
     let out = run_ok("grep 'fn ' src/executor.rs | tail -n 2");
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 lines, got {}: {:?}", lines.len(), lines);
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected 2 lines, got {}: {:?}",
+        lines.len(),
+        lines
+    );
 }
 
 #[test]
@@ -256,7 +284,12 @@ fn test_find_pipe_head_limits_output() {
     // Find all files, only show first 3
     let out = run_ok("find . -type f | head -n 3");
     let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
-    assert_eq!(lines.len(), 3, "head -n 3 should give 3 lines, got {:?}", lines);
+    assert_eq!(
+        lines.len(),
+        3,
+        "head -n 3 should give 3 lines, got {:?}",
+        lines
+    );
 }
 
 #[test]
@@ -442,7 +475,11 @@ fn test_semicolon_three_commands() {
 #[test]
 fn test_semicolon_mixed_commands() {
     let output = run("echo start; wc -l src/glob.rs; echo end");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let out = String::from_utf8_lossy(&output.stdout);
     assert!(out.starts_with("start\n"));
     assert!(out.ends_with("end\n"));
@@ -477,9 +514,17 @@ fn test_glob_question_mark() {
 fn test_glob_no_match_passthrough() {
     // Glob with no matches passes the pattern through (shell behavior)
     let output = run("echo zzz_no_match_*.xyz");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let out = String::from_utf8_lossy(&output.stdout);
-    assert!(out.contains("zzz_no_match_*.xyz"), "unmatched glob should pass through: {}", out);
+    assert!(
+        out.contains("zzz_no_match_*.xyz"),
+        "unmatched glob should pass through: {}",
+        out
+    );
 }
 
 // ============================================================
@@ -511,7 +556,11 @@ fn test_workflow_find_todos() {
     let output = run("grep -rn 'TODO\\|FIXME' src/");
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Should not be a validation error (rsh: prefix means validation failure)
-    assert!(!stderr.starts_with("rsh: "), "unexpected validation error: {}", stderr);
+    assert!(
+        !stderr.starts_with("rsh: "),
+        "unexpected validation error: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -538,7 +587,11 @@ fn test_workflow_grep_pipe_grep_refine_search() {
     // The point is the double-grep pipeline works without validation error
     let output = run("grep -n 'fn ' src/glob.rs | grep -v 'pub'");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.starts_with("rsh: "), "unexpected validation error: {}", stderr);
+    assert!(
+        !stderr.starts_with("rsh: "),
+        "unexpected validation error: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -554,7 +607,11 @@ fn test_workflow_count_lines_per_file() {
 fn test_workflow_read_specific_section() {
     // Agent reads the first 5 lines of a file to see the module doc comment
     let out = run_ok("head -n 5 src/validator.rs");
-    assert!(out.contains("AST security walker"), "expected validator doc: {}", out);
+    assert!(
+        out.contains("AST security walker"),
+        "expected validator doc: {}",
+        out
+    );
 }
 
 #[test]
@@ -568,7 +625,11 @@ fn test_workflow_check_cargo_dependencies() {
 fn test_workflow_semicolons_multi_inspect() {
     // Agent runs multiple independent inspection commands
     let output = run("wc -l src/main.rs; grep -c 'fn ' src/executor.rs; ls src/");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let out = String::from_utf8_lossy(&output.stdout);
     // Should contain output from all three commands
     assert!(!out.is_empty());
@@ -604,9 +665,18 @@ fn test_find_with_not() {
 fn test_empty_pipeline_stage_stderr() {
     // grep with no matches in a pipeline — downstream gets empty input
     let output = run("grep 'ZZZNONEXISTENT' src/main.rs | wc -l");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let out = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(out.trim(), "0", "wc -l of empty input should be 0, got '{}'", out.trim());
+    assert_eq!(
+        out.trim(),
+        "0",
+        "wc -l of empty input should be 0, got '{}'",
+        out.trim()
+    );
 }
 
 #[test]
@@ -625,7 +695,11 @@ fn test_mixed_quote_types() {
 fn test_find_with_empty_result_in_pipeline() {
     // find something that doesn't exist, pipe to wc
     let output = run("find src -name '*.xyz' -type f | wc -l");
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let out = String::from_utf8_lossy(&output.stdout);
     assert_eq!(out.trim(), "0");
 }
@@ -644,7 +718,9 @@ fn test_ls_pipe_grep_filters_filenames() {
     let out = run_ok("ls src/ | grep '\\.rs'");
     for line in out.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         assert!(trimmed.ends_with(".rs"), "unexpected: {}", trimmed);
     }
 }
@@ -679,7 +755,8 @@ fn test_redirect_grep_output_to_file() {
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/glob.rs"),
         tmp.join("glob.rs"),
-    ).unwrap();
+    )
+    .unwrap();
 
     let output = rsh_bin()
         .arg("--inherit-env")
@@ -689,7 +766,11 @@ fn test_redirect_grep_output_to_file() {
         .arg("grep 'pub' glob.rs > structs.txt")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let content = std::fs::read_to_string(tmp.join("structs.txt")).unwrap();
     assert!(content.contains("pub fn"));
@@ -705,7 +786,8 @@ fn test_redirect_pipeline_to_file() {
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/executor.rs"),
         tmp.join("executor.rs"),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Pipeline with redirect on the last command
     let output = rsh_bin()
@@ -716,7 +798,11 @@ fn test_redirect_pipeline_to_file() {
         .arg("grep 'fn ' executor.rs | head -n 5 > top_fns.txt")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let content = std::fs::read_to_string(tmp.join("top_fns.txt")).unwrap();
     let lines: Vec<&str> = content.lines().collect();
@@ -739,7 +825,11 @@ fn test_fast_command_within_timeout() {
         .arg("echo fast")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(stdout.trim(), "fast");
 }
@@ -754,7 +844,11 @@ fn test_glob_in_grep_with_pipeline() {
     let out = run_ok("grep -l 'fn ' src/*.rs | wc -l");
     let count: i32 = out.trim().parse().unwrap();
     // Most .rs files contain 'fn '
-    assert!(count >= 4, "expected at least 4 files with functions, got {}", count);
+    assert!(
+        count >= 4,
+        "expected at least 4 files with functions, got {}",
+        count
+    );
 }
 
 #[test]
@@ -762,7 +856,11 @@ fn test_glob_in_cat_with_pipeline() {
     // Cat multiple files via glob, count total lines
     let out = run_ok("cat src/*.rs | wc -l");
     let count: i32 = out.trim().parse().unwrap();
-    assert!(count > 100, "expected many lines across all source files, got {}", count);
+    assert!(
+        count > 100,
+        "expected many lines across all source files, got {}",
+        count
+    );
 }
 
 #[test]
