@@ -40,8 +40,19 @@ Behavior:
     std::process::exit(0);
 }
 
+fn shell_escape(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(|b| matches!(b,
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' |
+        b'_' | b'-' | b'.' | b'/' | b',' | b'+' | b':' | b'=' | b'@' | b'%'
+    )) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
+    eprintln!("       rsh [OPTIONS] --exec <CMD> [ARGS...]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --allow <cmds>      Comma-separated allowlist (overrides defaults)");
@@ -50,6 +61,7 @@ fn usage() {
     eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
     eprintln!("  --dir <path>        Working directory (default: cwd)");
+    eprintln!("  --exec <cmd> [args] Execute a command from argv (used by xargs/find rewrite)");
     eprintln!("  --prime             Print an LLM-ready description of rsh's capabilities");
     eprintln!("  --help              Show this help");
     eprintln!();
@@ -119,6 +131,18 @@ fn main() {
                     std::process::exit(2);
                 }
                 working_dir = Some(args[i].clone());
+            }
+            "--exec" => {
+                // Everything from here onward is the command + args
+                let exec_args = args[i + 1..].to_vec();
+                if exec_args.is_empty() {
+                    eprintln!("error: --exec requires a command");
+                    std::process::exit(2);
+                }
+                command_string = Some(
+                    exec_args.iter().map(|a| shell_escape(a)).collect::<Vec<_>>().join(" ")
+                );
+                break; // stop parsing flags
             }
             "-c" => {
                 // Accept -c for bash compatibility (rsh -c "command")

@@ -103,6 +103,57 @@ impl Executor {
         }
     }
 
+    /// Produce CLI args needed to spawn a child rsh with identical policy.
+    fn rsh_child_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        let cmds = self.allowlist.allowed_commands().join(",");
+        args.extend(["--allow".into(), cmds]);
+        args.extend(["--dir".into(), self.working_dir.display().to_string()]);
+        if self.allow_absolute { args.push("--allow-absolute".into()); }
+        if self.allow_redirects { args.push("--allow-redirects".into()); }
+        if self.inherit_env { args.push("--inherit-env".into()); }
+        args.extend(["--max-output".into(), self.max_output.to_string()]);
+        args
+    }
+
+    /// Build the prefix args for rewriting a sub-command through a child rsh.
+    fn rsh_exec_prefix(&self) -> Vec<String> {
+        let rsh_path = std::env::current_exe()
+            .unwrap_or_else(|_| std::path::PathBuf::from("rsh"))
+            .display()
+            .to_string();
+        let mut prefix = vec![rsh_path];
+        prefix.extend(self.rsh_child_args());
+        prefix.push("--exec".into());
+        prefix
+    }
+
+    /// Rewrite xargs or find sub-commands to go through a child rsh --exec.
+    fn rewrite_for_exec(&self, name: &str, args: &mut Vec<String>) {
+        let prefix = self.rsh_exec_prefix();
+        if name == "xargs" {
+            if let Some(pos) = find_xargs_subcmd_position(args) {
+                let tail = args.split_off(pos);
+                args.extend(prefix);
+                args.extend(tail);
+            }
+            // No sub-command found means xargs defaults to echo — rewrite to rsh --exec echo
+            else {
+                args.extend(prefix);
+                args.push("echo".into());
+            }
+        } else if name == "find" || name == "fd" {
+            // Process exec positions in reverse order so indices stay valid
+            let mut positions = find_exec_positions(args);
+            positions.reverse();
+            for (_exec_idx, subcmd_idx) in positions {
+                let tail = args.split_off(subcmd_idx);
+                args.extend(prefix.clone());
+                args.extend(tail);
+            }
+        }
+    }
+
     /// Execute a validated brush-parser Program.
     pub fn execute(&self, program: &Program) -> Output {
         // Validate first
@@ -303,8 +354,10 @@ impl Executor {
                 BrushCommand::Simple(s) => s,
                 _ => unreachable!(),
             };
-            let (name, args, redirects) =
+            let (name, mut args, redirects) =
                 self.extract_simple_command(simple, local_vars)?;
+
+            self.rewrite_for_exec(&name, &mut args);
 
             let mut process = Command::new(&name);
             process.args(&args);
@@ -407,7 +460,9 @@ impl Executor {
         local_vars: &mut HashMap<String, String>,
         stdin_data: Option<String>,
     ) -> Result<(String, String, i32), String> {
-        let (name, args, redirects) = self.extract_simple_command(cmd, local_vars)?;
+        let (name, mut args, redirects) = self.extract_simple_command(cmd, local_vars)?;
+
+        self.rewrite_for_exec(&name, &mut args);
 
         let mut process = Command::new(&name);
         process.args(&args);
@@ -1064,6 +1119,60 @@ impl Executor {
         }
         Ok(String::new())
     }
+}
+
+/// xargs flags that consume the next token as their value.
+const XARGS_FLAGS_WITH_ARG: &[&str] = &[
+    "-I", "-L", "-n", "-P", "-s", "-d", "-E", "-J", "-R",
+];
+
+/// Find the index of the first positional argument (the sub-command) in xargs args.
+fn find_xargs_subcmd_position(args: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+
+        if XARGS_FLAGS_WITH_ARG.contains(&a) {
+            i += 2;
+            continue;
+        }
+
+        // Short flags with value attached: -I{}, -dfoo, etc.
+        if a.starts_with('-') && a.len() > 1 && !a.starts_with("--") {
+            if XARGS_FLAGS_WITH_ARG.contains(&&a[0..2]) {
+                i += 1;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if a.starts_with("--") {
+            i += 1;
+            continue;
+        }
+
+        // First positional argument is the sub-command
+        return Some(i);
+    }
+    None
+}
+
+/// Find exec-flag positions in find/fd args and return (exec_flag_index, subcmd_index) pairs.
+fn find_exec_positions(args: &[String]) -> Vec<(usize, usize)> {
+    let exec_flags: &[&str] = &["-exec", "-execdir", "-x", "--exec", "-X", "--exec-batch"];
+    let mut positions = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if exec_flags.contains(&args[i].as_str()) {
+            let subcmd_idx = i + 1;
+            if subcmd_idx < args.len() {
+                positions.push((i, subcmd_idx));
+            }
+        }
+        i += 1;
+    }
+    positions
 }
 
 // Use a type alias to avoid confusion with brush_parser's Command
