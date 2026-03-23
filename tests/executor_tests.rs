@@ -96,13 +96,13 @@ fn test_grep_with_quoted_pattern() {
 #[test]
 fn test_variable_expansion() {
     let output = rsh_bin()
-        .arg("echo $HOME")
+        .arg("echo $PWD")
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stdout = stdout.trim();
-    assert!(!stdout.is_empty(), "HOME should expand to something");
+    assert!(!stdout.is_empty(), "PWD should expand to something");
     assert!(!stdout.contains('$'), "variable should be expanded");
 }
 
@@ -133,7 +133,7 @@ fn test_glob_expansion() {
 #[test]
 fn test_double_quoted_variable() {
     let output = rsh_bin()
-        .arg(r#"echo "hello $HOME""#)
+        .arg(r#"echo "hello $PWD""#)
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
@@ -543,7 +543,7 @@ fn test_tilde_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "tilde+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
         "stderr was: {}", stderr);
 }
 
@@ -557,7 +557,7 @@ fn test_variable_expansion_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "$HOME+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("outside the working directory"),
         "stderr was: {}", stderr);
 }
 
@@ -571,7 +571,7 @@ fn test_double_quoted_variable_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "quoted $HOME+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("outside the working directory"),
         "stderr was: {}", stderr);
 }
 
@@ -585,8 +585,56 @@ fn test_for_loop_tilde_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "for-loop tilde+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains(".."),
+    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("tilde"),
         "stderr was: {}", stderr);
+}
+
+// --- path vars ($HOME, ~) require --allow-absolute ---
+
+#[test]
+fn test_home_var_blocked_without_allow_absolute() {
+    let output = rsh_bin()
+        .arg("echo $HOME")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("outside the working directory"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_tilde_blocked_without_allow_absolute() {
+    let output = rsh_bin()
+        .arg("echo ~")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tilde"), "stderr was: {}", stderr);
+}
+
+#[test]
+fn test_home_var_allowed_with_allow_absolute() {
+    let output = rsh_bin()
+        .arg("--allow-absolute")
+        .arg("echo $HOME")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.trim().starts_with('/'), "HOME should expand to absolute path, got: {}", stdout);
+}
+
+#[test]
+fn test_tilde_allowed_with_allow_absolute() {
+    let output = rsh_bin()
+        .arg("--allow-absolute")
+        .arg("echo ~")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.trim().starts_with('/'), "~ should expand to absolute path, got: {}", stdout);
 }
 
 // --- /dev/null and fd duplication always allowed ---

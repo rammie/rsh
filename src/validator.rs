@@ -41,7 +41,10 @@ pub fn validate(
     allowlist: &Allowlist,
     config: &ValidatorConfig,
 ) -> Result<Vec<String>, String> {
-    let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+    let mut approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+    if config.allow_absolute {
+        approved_vars.extend(allowlist::PATH_VARS.iter().map(|s| s.to_string()));
+    }
     let mut ctx = ValidatorContext {
         allowlist,
         config,
@@ -335,10 +338,19 @@ impl<'a> ValidatorContext<'a> {
                 }
                 Ok(())
             }
+            WordPiece::TildePrefix(_) => {
+                if !self.config.allow_absolute {
+                    return Err(
+                        "tilde expansion (~) is not allowed without --allow-absolute \
+                         (~ expands to an absolute path outside the working directory)"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }
             WordPiece::Text(_)
             | WordPiece::SingleQuotedText(_)
             | WordPiece::AnsiCQuotedText(_)
-            | WordPiece::TildePrefix(_)
             | WordPiece::EscapeSequence(_)
             | WordPiece::ArithmeticExpression(_) => Ok(()),
         }
@@ -370,21 +382,13 @@ impl<'a> ValidatorContext<'a> {
         match param {
             Parameter::Named(name) => {
                 if !self.approved_vars.contains(name.as_str()) {
-                    return Err(format!(
-                        "variable '{}' not in approved list (approved: {})",
-                        name,
-                        allowlist::APPROVED_VARS.join(", ")
-                    ));
+                    return Err(self.var_not_approved_error(name));
                 }
             }
             Parameter::NamedWithIndex { name, .. }
             | Parameter::NamedWithAllIndices { name, .. } => {
                 if !self.approved_vars.contains(name.as_str()) {
-                    return Err(format!(
-                        "variable '{}' not in approved list (approved: {})",
-                        name,
-                        allowlist::APPROVED_VARS.join(", ")
-                    ));
+                    return Err(self.var_not_approved_error(name));
                 }
             }
             // Special parameters ($?, $#, $@, $*, $$, etc.) and positional ($1, $2)
@@ -392,6 +396,25 @@ impl<'a> ValidatorContext<'a> {
             Parameter::Special(_) | Parameter::Positional(_) => {}
         }
         Ok(())
+    }
+
+    fn var_not_approved_error(&self, name: &str) -> String {
+        // If it's a path var, hint that --allow-absolute would unlock it
+        if allowlist::PATH_VARS.contains(&name) {
+            format!(
+                "variable '{}' expands to a path outside the working directory \
+                 (use --allow-absolute to allow)",
+                name
+            )
+        } else {
+            let mut approved: Vec<&str> = self.approved_vars.iter().map(|s| s.as_str()).collect();
+            approved.sort();
+            format!(
+                "variable '{}' not in approved list (approved: {})",
+                name,
+                approved.join(", ")
+            )
+        }
     }
 
     fn validate_command_substitution(&self, cmd_str: &str) -> Result<(), String> {

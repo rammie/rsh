@@ -414,8 +414,8 @@ fn test_echo_with_double_quotes_and_var() {
 
 #[test]
 fn test_echo_braced_variable() {
-    let out = run_ok("echo ${HOME}");
-    assert!(out.trim().starts_with('/'), "HOME should start with /: {}", out);
+    let out = run_ok("echo ${PWD}");
+    assert!(out.trim().starts_with('/'), "PWD should start with /: {}", out);
 }
 
 #[test]

@@ -91,7 +91,10 @@ impl Executor {
         max_output: usize,
         inherit_env: bool,
     ) -> Self {
-        let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+        let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter()
+            .chain(allowlist::PATH_VARS.iter())
+            .map(|s| s.to_string())
+            .collect();
         Self {
             allowlist,
             working_dir,

@@ -45,7 +45,7 @@ Not allowed:
 
 Patterns for multi-step reads:
 ",
-        absolute_note = if allow_absolute { "" } else { "\n- Absolute paths in arguments (use relative paths)" },
+        absolute_note = if allow_absolute { "" } else { "\n- Absolute paths, tilde (~), $HOME, $TMPDIR in arguments (use relative paths)" },
         redirect_note = if allow_redirects { "" } else { "\n- File output redirects (> and >>)" },
     );
     if has_rg {

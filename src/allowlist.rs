@@ -26,10 +26,15 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "echo", "date", "true", "false", "test",
 ];
 
-/// Environment variables approved for use in command arguments and expansion.
+/// Environment variables always approved for use in command arguments and expansion.
 pub const APPROVED_VARS: &[&str] = &[
-    "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER", "TMPDIR",
-    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER",
+];
+
+/// Environment variables that expand to absolute paths outside the working directory.
+/// Only approved when --allow-absolute is set.
+pub const PATH_VARS: &[&str] = &[
+    "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
 ];
 
 #[derive(Debug, Clone)]
