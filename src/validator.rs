@@ -189,7 +189,7 @@ impl<'a> ValidatorContext<'a> {
         let string_args: Vec<&str> = arg_words.iter().map(|w| w.value.as_str()).collect();
 
         // Check blocked flags (exact match and prefix match)
-        self.check_blocked_flags(&cmd_name, &string_args, None)?;
+        self.check_blocked_flags(&cmd_name, &string_args)?;
 
         // Check argument paths for absolute paths and path traversal
         for arg in &string_args {
@@ -507,14 +507,11 @@ impl<'a> ValidatorContext<'a> {
     }
 
     /// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
-    fn check_blocked_flags(&self, cmd: &str, args: &[&str], context: Option<&str>) -> Result<(), String> {
+    fn check_blocked_flags(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
         if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd) {
             for arg in args {
                 if blocked_flags.contains(arg) {
-                    return Err(match context {
-                        Some(ctx) => format!("'{}' flag on '{}' in {} is not allowed", arg, cmd, ctx),
-                        None => format!("'{}' flag on '{}' is not allowed", arg, cmd),
-                    });
+                    return Err(format!("'{}' flag on '{}' is not allowed", arg, cmd));
                 }
             }
         }
@@ -522,10 +519,7 @@ impl<'a> ValidatorContext<'a> {
             for arg in args {
                 for prefix in *blocked_prefixes {
                     if arg.starts_with(prefix) {
-                        return Err(match context {
-                            Some(ctx) => format!("'{}' flag on '{}' in {} is not allowed (writes files in place)", arg, cmd, ctx),
-                            None => format!("'{}' flag on '{}' is not allowed (writes files in place)", arg, cmd),
-                        });
+                        return Err(format!("'{}' flag on '{}' is not allowed (writes files in place)", arg, cmd));
                     }
                 }
             }
