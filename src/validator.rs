@@ -18,7 +18,7 @@ use crate::allowlist::{self, Allowlist};
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
-    ("find", &["-delete", "-ok", "-okdir"]),
+    ("find", &["-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]),
 ];
 
 /// Flags blocked by prefix match (e.g., sed -i, sed -i.bak, sed -ibak all blocked).
@@ -258,6 +258,10 @@ impl<'a> ValidatorContext<'a> {
                 if let Some(values) = &fc.values {
                     for w in values {
                         self.validate_word(w)?;
+                        // Check iteration values for absolute paths and path traversal —
+                        // otherwise an attacker can set a loop variable to an absolute path
+                        // and use it in command arguments to bypass path restrictions.
+                        self.check_arg_path(&w.value)?;
                     }
                 }
                 // The loop variable is safe — it's locally bound
@@ -571,8 +575,8 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
-    /// Check for sed `w` and `W` (write) commands inside sed expressions.
-    /// These write to files, bypassing redirect restrictions.
+    /// Check for dangerous sed commands inside sed expressions.
+    /// Blocks: w/W (write to file), r/R (read arbitrary file), e (execute shell command).
     fn check_sed_write(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
         if cmd != "sed" {
             return Ok(());
@@ -588,12 +592,12 @@ impl<'a> ValidatorContext<'a> {
                 // Next arg is a sed expression
                 i += 1;
                 if i < args.len() {
-                    Self::check_sed_expr_for_write(strip_quotes(args[i]))?;
+                    Self::check_sed_expr_for_dangerous_commands(strip_quotes(args[i]))?;
                     found_script = true;
                 }
             } else if stripped.starts_with("-e") {
                 // -eEXPR form
-                Self::check_sed_expr_for_write(&stripped[2..])?;
+                Self::check_sed_expr_for_dangerous_commands(&stripped[2..])?;
                 found_script = true;
             } else if stripped == "-f" || stripped == "--file" {
                 // -f FILE — skip the file argument
@@ -603,7 +607,7 @@ impl<'a> ValidatorContext<'a> {
                 // Other flags (e.g., -n, --quiet, etc.)
             } else if !found_script {
                 // First non-flag, non-option argument is the sed script
-                Self::check_sed_expr_for_write(&stripped)?;
+                Self::check_sed_expr_for_dangerous_commands(&stripped)?;
                 found_script = true;
             }
             i += 1;
@@ -612,8 +616,18 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
-    /// Check a single sed expression for `w` or `W` (write) commands.
-    fn check_sed_expr_for_write(expr: &str) -> Result<(), String> {
+    /// Check a single sed expression for dangerous commands:
+    /// - `w`/`W`: write to file (bypasses redirect restrictions)
+    /// - `r`/`R`: read arbitrary file (bypasses path restrictions)
+    /// - `e`: execute pattern space as shell command (arbitrary code execution)
+    fn check_sed_expr_for_dangerous_commands(expr: &str) -> Result<(), String> {
+        /// Dangerous single-character sed commands: (lowercase, uppercase_or_none, description).
+        const DANGEROUS_CMDS: &[(u8, Option<u8>, &str)] = &[
+            (b'w', Some(b'W'), "writes to a file"),
+            (b'r', Some(b'R'), "reads a file"),
+            (b'e', None,       "executes shell commands"),
+        ];
+
         // Split on ';' and newlines to handle multi-command sed scripts
         for segment in expr.split(|c: char| c == ';' || c == '\n') {
             let trimmed = segment.trim();
@@ -624,25 +638,37 @@ impl<'a> ValidatorContext<'a> {
             // and /regex/ delimiters
             let after_addr = strip_sed_address(trimmed);
             let cmd_part = after_addr.trim_start_matches(|c: char| c == '{' || c == '}' || c == '!' || c == ' ' || c == '\t');
-            // Check for w or W command (write to file)
-            if cmd_part.starts_with('w') || cmd_part.starts_with('W') {
-                let rest = &cmd_part[1..];
-                if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('/') {
-                    return Err(format!(
-                        "'{}' command in sed expression writes to a file and is not allowed",
-                        &cmd_part[..1]
-                    ));
+
+            if let Some(&first) = cmd_part.as_bytes().first() {
+                // Check for dangerous single-letter commands (w/W, r/R, e)
+                for &(lo, hi, desc) in DANGEROUS_CMDS {
+                    if first == lo || hi.is_some_and(|h| first == h) {
+                        let rest = &cmd_part[1..];
+                        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') || rest.starts_with('/') {
+                            return Err(format!(
+                                "'{}' command in sed expression {} and is not allowed",
+                                first as char, desc
+                            ));
+                        }
+                        break;
+                    }
                 }
-            }
-            // Also check s/pattern/replacement/ with w flag: s/p/r/w file
-            if cmd_part.starts_with('s') && cmd_part.len() > 1 {
-                let delim = cmd_part.as_bytes()[1];
-                if let Some(flags_start) = find_s_command_flags(cmd_part, delim) {
-                    let flags = &cmd_part[flags_start..];
-                    if flags.contains('w') || flags.contains('W') {
-                        return Err(
-                            "'w' flag on sed s command writes to a file and is not allowed".to_string()
-                        );
+
+                // Check s/pattern/replacement/ flags for dangerous modifiers
+                if first == b's' && cmd_part.len() > 1 {
+                    let delim = cmd_part.as_bytes()[1];
+                    if let Some(flags_start) = find_s_command_flags(cmd_part, delim) {
+                        let flags = &cmd_part[flags_start..];
+                        if flags.contains('w') || flags.contains('W') {
+                            return Err(
+                                "'w' flag on sed s command writes to a file and is not allowed".to_string()
+                            );
+                        }
+                        if flags.contains('e') {
+                            return Err(
+                                "'e' flag on sed s command executes shell commands and is not allowed".to_string()
+                            );
+                        }
                     }
                 }
             }
@@ -859,8 +885,15 @@ fn strip_sed_address(s: &str) -> &str {
             }
             _ => break,
         }
-        // Check for comma (address range separator)
-        if i < bytes.len() && bytes[i] == b',' {
+        // Check for ~ (GNU sed step: addr~step) or , (address range separator)
+        if i < bytes.len() && bytes[i] == b'~' {
+            i += 1;
+            // Skip the step number
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            break; // ~ is not followed by a second address
+        } else if i < bytes.len() && bytes[i] == b',' {
             i += 1;
         } else {
             break;

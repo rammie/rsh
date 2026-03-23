@@ -1066,3 +1066,202 @@ fn test_find_exec_rewrite_works() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("main.rs"), "stdout was: {}", stdout);
 }
+
+// ============================================================
+// Sandbox escape tests
+// ============================================================
+
+#[test]
+fn test_escape_for_loop_absolute_path_bypass() {
+    // ESCAPE: For-loop values are not checked for absolute paths by the validator.
+    // This bypasses the --allow-absolute restriction by putting the absolute path
+    // in the loop variable, then using it in a command argument.
+    // `cat /etc/hosts` is blocked, but `for x in /etc; do cat $x/hosts; done` is not.
+    let output = rsh_bin()
+        .arg("for x in /etc; do cat $x/hosts; done")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: for-loop absolute path bypass succeeded — \
+         should have been blocked. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected 'not allowed' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_for_loop_absolute_path_multi_segment() {
+    // Variant: split the absolute path across loop variable and argument
+    let output = rsh_bin()
+        .arg("for d in /usr /etc; do ls $d | head -2; done")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: for-loop directory listing bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected 'not allowed' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_for_loop_grep_arbitrary_files() {
+    // ESCAPE: Use for-loop to grep files outside working directory
+    let output = rsh_bin()
+        .arg("for x in /etc; do grep localhost $x/hosts; done")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: for-loop grep bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected 'not allowed' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_sed_r_command_reads_arbitrary_file() {
+    // ESCAPE: sed's 'r' command reads a file and inserts its contents into output.
+    // The file path is inside the sed expression, bypassing path validation.
+    // `cat /etc/hosts` is blocked, but `echo x | sed 'r /etc/hosts'` is not.
+    let output = rsh_bin()
+        .arg("echo x | sed 'r /etc/hosts'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: sed r command read bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected 'not allowed' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_sed_r_with_address() {
+    // sed r with an address prefix: `1r /etc/hosts`
+    let output = rsh_bin()
+        .arg("echo x | sed '1r /etc/hosts'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: sed addressed r command read bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected 'not allowed' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_sed_e_command_executes_arbitrary_code() {
+    // ESCAPE: GNU sed's 'e' command executes the pattern space as a shell command.
+    // The validator does not check for 'e' in sed expressions.
+    // On macOS (BSD sed) this errors at runtime, but on Linux (GNU sed) it would
+    // execute arbitrary commands, completely bypassing the sandbox.
+    let output = rsh_bin()
+        .arg("echo 'echo ESCAPED' | sed 'e'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The VALIDATOR (rsh:) should reject this before sed even runs.
+    // BSD sed also errors, but that's not sufficient — on GNU sed it would execute.
+    assert!(
+        stderr.contains("rsh:") && stderr.contains("not allowed"),
+        "ESCAPE: sed e command was not blocked by rsh validator. \
+         stderr: {}, stdout: {}",
+        stderr, stdout
+    );
+}
+
+#[test]
+fn test_escape_sed_s_e_flag_executes_replacement() {
+    // ESCAPE: GNU sed's s///e flag executes the replacement string as a command.
+    // The validator checks for 'w'/'W' in s-command flags but not 'e'.
+    let output = rsh_bin()
+        .arg("echo x | sed 's/x/echo ESCAPED/e'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Must be blocked by rsh's validator, not just by BSD sed's runtime error
+    assert!(
+        stderr.contains("rsh:") && stderr.contains("not allowed"),
+        "ESCAPE: sed s///e flag was not blocked by rsh validator. \
+         stderr: {}, stdout: {}",
+        stderr, stdout
+    );
+}
+
+#[test]
+fn test_escape_find_fprint_writes_file() {
+    // ESCAPE: find's -fprint flag writes output to a file, bypassing --allow-redirects.
+    // The validator only blocks -delete, -ok, -okdir on find.
+    // Note: -fprint is GNU find only (not available on macOS BSD find).
+    // The validator should still block it regardless of platform.
+    let output = rsh_bin()
+        .arg("find . -name 'Cargo.toml' -fprint output.txt")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rsh:") && stderr.contains("not allowed"),
+        "ESCAPE: find -fprint should be blocked by rsh validator. stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_find_fprintf_writes_file() {
+    // ESCAPE: find's -fprintf flag writes formatted output to a file.
+    let output = rsh_bin()
+        .arg("find . -name 'Cargo.toml' -fprintf output.txt '%p\\n'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rsh:") && stderr.contains("not allowed"),
+        "ESCAPE: find -fprintf should be blocked by rsh validator. stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_find_fls_writes_file() {
+    // ESCAPE: find's -fls flag writes ls-style output to a file.
+    let output = rsh_bin()
+        .arg("find . -name 'Cargo.toml' -fls output.txt")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rsh:") && stderr.contains("not allowed"),
+        "ESCAPE: find -fls should be blocked by rsh validator. stderr: {}",
+        stderr
+    );
+}
