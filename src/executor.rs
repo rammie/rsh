@@ -1,5 +1,4 @@
 /// Executor: walks the brush-parser AST, expands words, wires pipes, and spawns processes.
-
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -53,7 +52,6 @@ fn floor_char_boundary(s: &str, pos: usize) -> usize {
     }
     i
 }
-
 
 pub struct Output {
     pub stdout: String,
@@ -193,8 +191,7 @@ impl Executor {
         let mut all_stdout = String::new();
         let mut all_stderr = String::new();
 
-        let (stdout, stderr, mut last_code) =
-            self.execute_pipeline(&and_or.first, local_vars)?;
+        let (stdout, stderr, mut last_code) = self.execute_pipeline(&and_or.first, local_vars)?;
         all_stdout.push_str(&stdout);
         all_stderr.push_str(&stderr);
 
@@ -202,8 +199,7 @@ impl Executor {
             match additional {
                 AndOr::And(pipeline) => {
                     if last_code == 0 {
-                        let (stdout, stderr, code) =
-                            self.execute_pipeline(pipeline, local_vars)?;
+                        let (stdout, stderr, code) = self.execute_pipeline(pipeline, local_vars)?;
                         all_stdout.push_str(&stdout);
                         all_stderr.push_str(&stderr);
                         last_code = code;
@@ -211,8 +207,7 @@ impl Executor {
                 }
                 AndOr::Or(pipeline) => {
                     if last_code != 0 {
-                        let (stdout, stderr, code) =
-                            self.execute_pipeline(pipeline, local_vars)?;
+                        let (stdout, stderr, code) = self.execute_pipeline(pipeline, local_vars)?;
                         all_stdout.push_str(&stdout);
                         all_stderr.push_str(&stderr);
                         last_code = code;
@@ -244,7 +239,9 @@ impl Executor {
         // All commands in a pipeline must be simple commands for OS pipe wiring.
         // If any are compound, fall back to sequential execution.
 
-        let all_simple = commands.iter().all(|c| matches!(c, BrushCommand::Simple(_)));
+        let all_simple = commands
+            .iter()
+            .all(|c| matches!(c, BrushCommand::Simple(_)));
 
         if all_simple {
             return self.execute_simple_pipeline(commands, local_vars, pipeline.bang);
@@ -295,8 +292,7 @@ impl Executor {
                 BrushCommand::Simple(s) => s,
                 _ => unreachable!(),
             };
-            let (name, args, redirects) =
-                self.extract_simple_command(simple, local_vars)?;
+            let (name, args, redirects) = self.extract_simple_command(simple, local_vars)?;
 
             let mut process = Command::new(&name);
             process.args(&args);
@@ -382,9 +378,7 @@ impl Executor {
                 }
                 Ok((stdout, stderr, code))
             }
-            BrushCommand::Function(_) => {
-                Err("function definitions are not allowed".to_string())
-            }
+            BrushCommand::Function(_) => Err("function definitions are not allowed".to_string()),
             BrushCommand::ExtendedTest(_) => {
                 // [[ ... ]] — we don't execute these, but we could in the future.
                 // For now, return success (the validator already checked the contents).
@@ -480,29 +474,21 @@ impl Executor {
         local_vars: &mut HashMap<String, String>,
     ) -> Result<(String, String, i32), String> {
         match compound {
-            CompoundCommand::BraceGroup(bg) => {
-                self.execute_compound_list(&bg.list, local_vars)
-            }
+            CompoundCommand::BraceGroup(bg) => self.execute_compound_list(&bg.list, local_vars),
             CompoundCommand::Subshell(sub) => {
                 // Execute in a "subshell" (we don't fork, but local_vars don't leak out)
                 let mut sub_vars = local_vars.clone();
                 self.execute_compound_list(&sub.list, &mut sub_vars)
             }
-            CompoundCommand::ForClause(fc) => {
-                self.execute_for_clause(fc, local_vars)
-            }
+            CompoundCommand::ForClause(fc) => self.execute_for_clause(fc, local_vars),
             CompoundCommand::WhileClause(wc) => {
                 self.execute_while_clause(&wc.0, &wc.1.list, true, local_vars)
             }
             CompoundCommand::UntilClause(uc) => {
                 self.execute_while_clause(&uc.0, &uc.1.list, false, local_vars)
             }
-            CompoundCommand::IfClause(ic) => {
-                self.execute_if_clause(ic, local_vars)
-            }
-            CompoundCommand::CaseClause(cc) => {
-                self.execute_case_clause(cc, local_vars)
-            }
+            CompoundCommand::IfClause(ic) => self.execute_if_clause(ic, local_vars),
+            CompoundCommand::CaseClause(cc) => self.execute_case_clause(cc, local_vars),
             CompoundCommand::Arithmetic(_) => {
                 // (( expr )) — not supported for execution yet
                 Ok((String::new(), String::new(), 0))
@@ -536,8 +522,7 @@ impl Executor {
 
         for value in values {
             local_vars.insert(fc.variable_name.clone(), value);
-            let (stdout, stderr, code) =
-                self.execute_compound_list(&fc.body.list, local_vars)?;
+            let (stdout, stderr, code) = self.execute_compound_list(&fc.body.list, local_vars)?;
             all_stdout.push_str(&stdout);
             all_stderr.push_str(&stderr);
             last_code = code;
@@ -710,10 +695,7 @@ impl Executor {
             let mut results = Vec::new();
             for part in expanded.split_whitespace() {
                 if rsh_glob::is_glob(part) {
-                    results.extend(rsh_glob::expand_glob(
-                        part,
-                        &self.working_dir,
-                    )?);
+                    results.extend(rsh_glob::expand_glob(part, &self.working_dir)?);
                 } else {
                     results.push(part.to_string());
                 }
@@ -777,9 +759,7 @@ impl Executor {
                     Ok(s.clone())
                 }
             }
-            WordPiece::ParameterExpansion(expr) => {
-                self.expand_parameter(expr, local_vars)
-            }
+            WordPiece::ParameterExpansion(expr) => self.expand_parameter(expr, local_vars),
             WordPiece::CommandSubstitution(cmd_str) => {
                 self.execute_command_substitution(cmd_str, local_vars)
             }
@@ -861,15 +841,11 @@ impl Executor {
                     Ok(std::env::var(name).unwrap_or_default())
                 }
             }
-            Parameter::Special(sp) => {
-                match sp {
-                    word::SpecialParameter::LastExitStatus => Ok("0".to_string()),
-                    word::SpecialParameter::ProcessId => {
-                        Ok(std::process::id().to_string())
-                    }
-                    _ => Ok(String::new()),
-                }
-            }
+            Parameter::Special(sp) => match sp {
+                word::SpecialParameter::LastExitStatus => Ok("0".to_string()),
+                word::SpecialParameter::ProcessId => Ok(std::process::id().to_string()),
+                _ => Ok(String::new()),
+            },
             Parameter::Positional(_) => Ok(String::new()),
             Parameter::NamedWithIndex { name, .. }
             | Parameter::NamedWithAllIndices { name, .. } => {
@@ -897,8 +873,7 @@ impl Executor {
 
         // Execute it
         let mut sub_vars = local_vars.clone();
-        let (stdout, _stderr, _code) =
-            self.execute_program(&inner_program, &mut sub_vars)?;
+        let (stdout, _stderr, _code) = self.execute_program(&inner_program, &mut sub_vars)?;
 
         // Trim trailing newline (shell behavior)
         Ok(stdout.trim_end_matches('\n').to_string())
@@ -973,7 +948,11 @@ impl Executor {
         }
     }
 
-    fn collect_redirects_from_list(&self, list: &RedirectList, local_vars: &HashMap<String, String>) -> Vec<RedirectInfo> {
+    fn collect_redirects_from_list(
+        &self,
+        list: &RedirectList,
+        local_vars: &HashMap<String, String>,
+    ) -> Vec<RedirectInfo> {
         let mut result = Vec::new();
         for r in &list.0 {
             if let Ok(infos) = self.extract_redirect(r, local_vars) {
@@ -1065,7 +1044,9 @@ enum RedirectKindSimple {
 
 /// Check if parsed word pieces contain unquoted glob characters.
 fn pieces_have_unquoted_glob(pieces: &[word::WordPieceWithSource]) -> bool {
-    pieces.iter().any(|p| matches!(&p.piece, WordPiece::Text(s) if rsh_glob::is_glob(s)))
+    pieces
+        .iter()
+        .any(|p| matches!(&p.piece, WordPiece::Text(s) if rsh_glob::is_glob(s)))
 }
 
 /// Check if parsed word pieces contain unquoted command substitution (needs word splitting).

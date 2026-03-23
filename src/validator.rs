@@ -7,7 +7,6 @@
 /// - Redirect gating (--allow-redirects)
 /// - Path traversal / absolute path checks
 /// - Rejection of function definitions, background (&), and process substitution
-
 use std::collections::HashSet;
 
 use brush_parser::ast::*;
@@ -18,15 +17,18 @@ use crate::allowlist::Allowlist;
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
-    ("find", &["-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-exec", "-execdir"]),
+    (
+        "find",
+        &[
+            "-delete", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls", "-exec",
+            "-execdir",
+        ],
+    ),
     ("fd", &["-x", "--exec", "-X", "--exec-batch"]),
 ];
 
 /// Flags blocked by prefix match (e.g., sort -o, sort -ofoo all blocked).
-const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
-    ("sort", &["-o", "--output"]),
-];
-
+const PREFIX_BLOCKED: &[(&str, &[&str])] = &[("sort", &["-o", "--output"])];
 
 /// Configuration passed into the validator.
 pub struct ValidatorConfig {
@@ -110,13 +112,16 @@ impl<'a> ValidatorContext<'a> {
             Command::Compound(compound, redirects) => {
                 // Validate redirects if present
                 if let Some(redirect_list) = redirects {
-                    self.validate_redirect_list(redirect_list, pipeline_idx, pipeline_len, "compound command")?;
+                    self.validate_redirect_list(
+                        redirect_list,
+                        pipeline_idx,
+                        pipeline_len,
+                        "compound command",
+                    )?;
                 }
                 self.validate_compound_command(compound)
             }
-            Command::Function(_) => {
-                Err("function definitions are not allowed".to_string())
-            }
+            Command::Function(_) => Err("function definitions are not allowed".to_string()),
             Command::ExtendedTest(test) => {
                 // [[ ... ]] — validate any words/variable references inside
                 self.validate_extended_test(&test.expr)
@@ -223,12 +228,8 @@ impl<'a> ValidatorContext<'a> {
 
     fn validate_compound_command(&mut self, compound: &CompoundCommand) -> Result<(), String> {
         match compound {
-            CompoundCommand::BraceGroup(bg) => {
-                self.validate_compound_list(&bg.list)
-            }
-            CompoundCommand::Subshell(sub) => {
-                self.validate_compound_list(&sub.list)
-            }
+            CompoundCommand::BraceGroup(bg) => self.validate_compound_list(&bg.list),
+            CompoundCommand::Subshell(sub) => self.validate_compound_list(&sub.list),
             CompoundCommand::ForClause(fc) => {
                 // Validate the iteration values
                 if let Some(values) = &fc.values {
@@ -307,8 +308,8 @@ impl<'a> ValidatorContext<'a> {
     /// Validate a Word for variable references and command substitutions.
     fn validate_word(&self, word: &Word) -> Result<(), String> {
         let opts = ParserOptions::default();
-        let pieces = word::parse(&word.value, &opts)
-            .map_err(|e| format!("word parse error: {}", e))?;
+        let pieces =
+            word::parse(&word.value, &opts).map_err(|e| format!("word parse error: {}", e))?;
         for piece_with_source in &pieces {
             self.validate_word_piece(&piece_with_source.piece)?;
         }
@@ -317,9 +318,7 @@ impl<'a> ValidatorContext<'a> {
 
     fn validate_word_piece(&self, piece: &WordPiece) -> Result<(), String> {
         match piece {
-            WordPiece::ParameterExpansion(expr) => {
-                self.validate_parameter_expr(expr)
-            }
+            WordPiece::ParameterExpansion(expr) => self.validate_parameter_expr(expr),
             WordPiece::CommandSubstitution(cmd_str) => {
                 // Recursively parse and validate the substituted command
                 self.validate_command_substitution(cmd_str)
@@ -334,9 +333,9 @@ impl<'a> ValidatorContext<'a> {
                 }
                 Ok(())
             }
-            WordPiece::TildePrefix(_) => {
-                Err("tilde expansion (~) is not allowed (~ expands to an absolute path)".to_string())
-            }
+            WordPiece::TildePrefix(_) => Err(
+                "tilde expansion (~) is not allowed (~ expands to an absolute path)".to_string(),
+            ),
             WordPiece::Text(_)
             | WordPiece::SingleQuotedText(_)
             | WordPiece::AnsiCQuotedText(_)
@@ -395,7 +394,8 @@ impl<'a> ValidatorContext<'a> {
         // Parse the inner command
         let reader = std::io::Cursor::new(cmd_str);
         let mut parser = brush_parser::Parser::builder().reader(reader).build();
-        let inner_program = parser.parse_program()
+        let inner_program = parser
+            .parse_program()
             .map_err(|e| format!("parse error in command substitution: {}", e))?;
 
         // Create a new context to validate the inner program (shares allowlist/config)
@@ -414,8 +414,7 @@ impl<'a> ValidatorContext<'a> {
         match redirect {
             IoRedirect::File(_, kind, target) => {
                 match kind {
-                    IoFileRedirectKind::DuplicateInput
-                    | IoFileRedirectKind::DuplicateOutput => {
+                    IoFileRedirectKind::DuplicateInput | IoFileRedirectKind::DuplicateOutput => {
                         // fd duplication (2>&1, 1>&2, etc.) — always allowed
                         match target {
                             IoFileRedirectTarget::Fd(_) | IoFileRedirectTarget::Duplicate(_) => {
@@ -442,8 +441,7 @@ impl<'a> ValidatorContext<'a> {
                             );
                         }
                     }
-                    IoFileRedirectKind::Read
-                    | IoFileRedirectKind::ReadAndWrite => {
+                    IoFileRedirectKind::Read | IoFileRedirectKind::ReadAndWrite => {
                         return Err("input redirection is not supported".to_string());
                     }
                 }
@@ -516,7 +514,10 @@ impl<'a> ValidatorContext<'a> {
             for arg in args {
                 for prefix in *blocked_prefixes {
                     if arg.starts_with(prefix) {
-                        return Err(format!("'{}' flag on '{}' is not allowed (writes files in place)", arg, cmd));
+                        return Err(format!(
+                            "'{}' flag on '{}' is not allowed (writes files in place)",
+                            arg, cmd
+                        ));
                     }
                 }
             }
@@ -545,17 +546,15 @@ impl<'a> ValidatorContext<'a> {
         }
         Ok(())
     }
-
 }
 
 /// Strip surrounding quotes from a Word.value (brush-parser preserves them).
 fn strip_quotes(s: &str) -> &str {
-    if s.len() >= 2 {
-        if (s.starts_with('"') && s.ends_with('"'))
-            || (s.starts_with('\'') && s.ends_with('\''))
-        {
-            return &s[1..s.len() - 1];
-        }
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"'))
+            || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        return &s[1..s.len() - 1];
     }
     s
 }
