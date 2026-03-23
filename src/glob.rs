@@ -1,6 +1,6 @@
 /// Glob expansion scoped to a working directory.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Returns true if a string contains unescaped glob metacharacters.
 pub fn is_glob(s: &str) -> bool {
@@ -16,17 +16,14 @@ pub fn is_glob(s: &str) -> bool {
 }
 
 /// Expand a glob pattern relative to the working directory.
-/// If `allow_absolute` is false, absolute patterns are rejected.
+/// Absolute patterns and path traversal are always rejected.
 pub fn expand_glob(
     pattern: &str,
     working_dir: &Path,
-    allow_absolute: bool,
 ) -> Result<Vec<String>, String> {
-    let is_absolute = pattern.starts_with('/');
-
-    if is_absolute && !allow_absolute {
+    if pattern.starts_with('/') {
         return Err(format!(
-            "absolute glob pattern '{}' not allowed (use --allow-absolute to enable)",
+            "absolute glob pattern '{}' not allowed",
             pattern
         ));
     }
@@ -39,11 +36,7 @@ pub fn expand_glob(
         ));
     }
 
-    let full_pattern = if is_absolute {
-        PathBuf::from(pattern)
-    } else {
-        working_dir.join(pattern)
-    };
+    let full_pattern = working_dir.join(pattern);
 
     let pattern_str = full_pattern.to_str().ok_or("invalid UTF-8 in glob pattern")?;
 
@@ -63,15 +56,11 @@ pub fn expand_glob(
                         continue; // skip paths outside working_dir
                     }
                 }
-                // Convert back to relative path if the input was relative
-                let display_path = if is_absolute {
-                    path.to_string_lossy().to_string()
-                } else {
-                    path.strip_prefix(working_dir)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .to_string()
-                };
+                // Convert back to relative path
+                let display_path = path.strip_prefix(working_dir)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
                 results.push(display_path);
             }
             Err(e) => {
@@ -107,7 +96,7 @@ mod tests {
 
     #[test]
     fn test_expand_no_absolute() {
-        let result = expand_glob("/etc/*", Path::new("/tmp"), false);
+        let result = expand_glob("/etc/*", Path::new("/tmp"));
         assert!(result.is_err());
     }
 }

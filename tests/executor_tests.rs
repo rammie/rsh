@@ -94,16 +94,14 @@ fn test_grep_with_quoted_pattern() {
 }
 
 #[test]
-fn test_variable_expansion() {
+fn test_variable_expansion_blocked() {
     let output = rsh_bin()
         .arg("echo $PWD")
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stdout = stdout.trim();
-    assert!(!stdout.is_empty(), "PWD should expand to something");
-    assert!(!stdout.contains('$'), "variable should be expanded");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -114,7 +112,7 @@ fn test_unapproved_variable() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not in approved list"));
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -131,14 +129,14 @@ fn test_glob_expansion() {
 }
 
 #[test]
-fn test_double_quoted_variable() {
+fn test_double_quoted_variable_blocked() {
     let output = rsh_bin()
         .arg(r#"echo "hello $PWD""#)
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.starts_with("hello /"), "stdout was: {}", stdout);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -314,7 +312,7 @@ fn test_double_quoted_unapproved_var_rejected_at_validate() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not in approved list"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
     assert!(stderr.contains("SECRET_KEY"), "stderr was: {}", stderr);
 }
 
@@ -557,7 +555,7 @@ fn test_variable_expansion_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "$HOME+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("outside the working directory"),
+    assert!(stderr.contains("not allowed"),
         "stderr was: {}", stderr);
 }
 
@@ -571,7 +569,7 @@ fn test_double_quoted_variable_path_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success(), "quoted $HOME+traversal should be blocked");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("path traversal") || stderr.contains("..") || stderr.contains("outside the working directory"),
+    assert!(stderr.contains("not allowed"),
         "stderr was: {}", stderr);
 }
 
@@ -589,21 +587,21 @@ fn test_for_loop_tilde_traversal_blocked() {
         "stderr was: {}", stderr);
 }
 
-// --- path vars ($HOME, ~) require --allow-absolute ---
+// --- all env vars and tilde blocked ---
 
 #[test]
-fn test_home_var_blocked_without_allow_absolute() {
+fn test_home_var_blocked() {
     let output = rsh_bin()
         .arg("echo $HOME")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("outside the working directory"), "stderr was: {}", stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
-fn test_tilde_blocked_without_allow_absolute() {
+fn test_tilde_blocked() {
     let output = rsh_bin()
         .arg("echo ~")
         .output()
@@ -614,27 +612,17 @@ fn test_tilde_blocked_without_allow_absolute() {
 }
 
 #[test]
-fn test_home_var_allowed_with_allow_absolute() {
+fn test_for_loop_variable_allowed() {
+    // For-loop variables are dynamically approved — the only way to use variables
     let output = rsh_bin()
-        .arg("--allow-absolute")
-        .arg("echo $HOME")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg(r#"for f in src/*.rs; do echo "$f"; done"#)
         .output()
         .unwrap();
     assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.trim().starts_with('/'), "HOME should expand to absolute path, got: {}", stdout);
-}
-
-#[test]
-fn test_tilde_allowed_with_allow_absolute() {
-    let output = rsh_bin()
-        .arg("--allow-absolute")
-        .arg("echo ~")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.trim().starts_with('/'), "~ should expand to absolute path, got: {}", stdout);
+    assert!(stdout.contains("src/main.rs"), "stdout was: {}", stdout);
 }
 
 // --- /dev/null and fd duplication always allowed ---
@@ -689,10 +677,7 @@ fn test_redirect_to_real_file_still_blocked_without_flag() {
 
 #[test]
 fn test_escape_for_loop_absolute_path_bypass() {
-    // ESCAPE: For-loop values are not checked for absolute paths by the validator.
-    // This bypasses the --allow-absolute restriction by putting the absolute path
-    // in the loop variable, then using it in a command argument.
-    // `cat /etc/hosts` is blocked, but `for x in /etc; do cat $x/hosts; done` is not.
+    // For-loop values with absolute paths are blocked by the validator's check_arg_path.
     let output = rsh_bin()
         .arg("for x in /etc; do cat $x/hosts; done")
         .output()

@@ -192,7 +192,7 @@ fn test_unapproved_var_in_substitution_rejected() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("SECRET") && stderr.contains("not in approved list"), "stderr was: {}", stderr);
+    assert!(stderr.contains("SECRET") && stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]

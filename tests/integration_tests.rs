@@ -404,18 +404,19 @@ fn test_echo_with_single_quotes() {
 }
 
 #[test]
-fn test_echo_with_double_quotes_and_var() {
-    let out = run_ok(r#"echo "user is $USER""#);
-    let trimmed = out.trim();
-    assert!(trimmed.starts_with("user is "), "stdout: {}", trimmed);
-    // USER should be expanded to something non-empty
-    assert!(trimmed.len() > "user is ".len(), "USER not expanded: {}", trimmed);
+fn test_echo_with_double_quotes_and_var_blocked() {
+    let output = run(r#"echo "user is $USER""#);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]
-fn test_echo_braced_variable() {
-    let out = run_ok("echo ${PWD}");
-    assert!(out.trim().starts_with('/'), "PWD should start with /: {}", out);
+fn test_echo_braced_variable_blocked() {
+    let output = run(r#"echo ${PWD}"#);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not allowed"), "stderr was: {}", stderr);
 }
 
 #[test]

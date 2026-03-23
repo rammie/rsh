@@ -16,7 +16,7 @@ fn has_command(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn prime(al: &Allowlist, allow_redirects: bool, allow_absolute: bool) {
+fn prime(al: &Allowlist, allow_redirects: bool) {
     let cmds = al.allowed_commands().join(", ");
     let has_rg = has_command("rg");
     let has_fd = has_command("fd");
@@ -41,11 +41,12 @@ Not allowed:
 - find -exec / -execdir (use command substitution or for-loops instead)
 - Commands outside the allowlist above
 - Function definitions, background execution (&), process substitution
-- Path traversal (..) in arguments{absolute_note}{redirect_note}
+- Path traversal (..) in arguments
+- Absolute paths, tilde (~), and environment variables in arguments
+- Variable references ($HOME, $USER, etc.) in arguments{redirect_note}
 
 Patterns for multi-step reads:
 ",
-        absolute_note = if allow_absolute { "" } else { "\n- Absolute paths, tilde (~), $HOME, $TMPDIR in arguments (use relative paths)" },
         redirect_note = if allow_redirects { "" } else { "\n- File output redirects (> and >>)" },
     );
     if has_rg {
@@ -62,7 +63,7 @@ Patterns for multi-step reads:
 \nBehavior:
 - stdout, stderr, and exit codes work exactly like bash
 - Rejected commands print an error to stderr and exit 1
-- Environment is sanitized (only HOME, PATH, PWD, etc. are visible)
+- Environment is sanitized (PATH, LANG, etc. are forwarded to commands)
 ");
     std::process::exit(0);
 }
@@ -72,7 +73,6 @@ fn usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --allow <cmds>      Comma-separated allowlist (overrides defaults)");
-    eprintln!("  --allow-absolute    Allow absolute paths in arguments, globs, and redirects");
     eprintln!("  --allow-redirects   Allow output redirects (> and >>)");
     eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
@@ -96,7 +96,6 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     let mut allow_flag: Option<String> = None;
-    let mut allow_absolute = false;
     let mut allow_redirects = false;
     let mut max_output: usize = 10 * 1024 * 1024; // 10MB
     let mut inherit_env = false;
@@ -118,9 +117,6 @@ fn main() {
                     std::process::exit(2);
                 }
                 allow_flag = Some(args[i].clone());
-            }
-            "--allow-absolute" => {
-                allow_absolute = true;
             }
             "--allow-redirects" => {
                 allow_redirects = true;
@@ -171,7 +167,7 @@ fn main() {
     let al = Allowlist::load(allow_flag.as_deref());
 
     if show_prime {
-        prime(&al, allow_redirects, allow_absolute);
+        prime(&al, allow_redirects);
     }
 
     let command_string = match command_string {
@@ -209,7 +205,6 @@ fn main() {
     let executor = Executor::new(
         al,
         working_dir,
-        allow_absolute,
         allow_redirects,
         max_output,
         inherit_env,

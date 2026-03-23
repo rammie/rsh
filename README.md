@@ -102,7 +102,6 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--allow <cmds>` | built-in defaults | Comma-separated command allowlist |
-| `--allow-absolute` | off | Allow absolute paths in arguments, globs, and redirects |
 | `--allow-redirects` | off | Allow `>` and `>>` output redirects |
 | `--max-output <bytes>` | 10MB | Truncate combined stdout+stderr beyond this limit |
 | `--inherit-env` | off | Pass full parent environment to child processes |

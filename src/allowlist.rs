@@ -26,15 +26,16 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "echo", "date", "true", "false", "test",
 ];
 
-/// Environment variables always approved for use in command arguments and expansion.
-pub const APPROVED_VARS: &[&str] = &[
-    "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "EDITOR", "PAGER",
-];
+/// Environment variables approved for use in command arguments.
+/// Empty by default — no env var references are needed for codebase research.
+/// For-loop variables are approved dynamically by the validator.
+pub const APPROVED_VARS: &[&str] = &[];
 
-/// Environment variables that expand to absolute paths outside the working directory.
-/// Only approved when --allow-absolute is set.
-pub const PATH_VARS: &[&str] = &[
-    "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+/// Environment variables forwarded to child processes for correct operation.
+/// These are NOT available for use in command arguments — they're only passed
+/// through to the spawned process environment.
+pub const FORWARDED_VARS: &[&str] = &[
+    "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "TMPDIR",
 ];
 
 #[derive(Debug, Clone)]

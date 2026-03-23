@@ -31,7 +31,6 @@ const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
 /// Configuration passed into the validator.
 pub struct ValidatorConfig {
     pub allow_redirects: bool,
-    pub allow_absolute: bool,
 }
 
 /// Validate a brush-parser Program against the security policy.
@@ -41,10 +40,7 @@ pub fn validate(
     allowlist: &Allowlist,
     config: &ValidatorConfig,
 ) -> Result<Vec<String>, String> {
-    let mut approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
-    if config.allow_absolute {
-        approved_vars.extend(allowlist::PATH_VARS.iter().map(|s| s.to_string()));
-    }
+    let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
     let mut ctx = ValidatorContext {
         allowlist,
         config,
@@ -339,14 +335,7 @@ impl<'a> ValidatorContext<'a> {
                 Ok(())
             }
             WordPiece::TildePrefix(_) => {
-                if !self.config.allow_absolute {
-                    return Err(
-                        "tilde expansion (~) is not allowed without --allow-absolute \
-                         (~ expands to an absolute path outside the working directory)"
-                            .to_string(),
-                    );
-                }
-                Ok(())
+                Err("tilde expansion (~) is not allowed (~ expands to an absolute path)".to_string())
             }
             WordPiece::Text(_)
             | WordPiece::SingleQuotedText(_)
@@ -399,22 +388,7 @@ impl<'a> ValidatorContext<'a> {
     }
 
     fn var_not_approved_error(&self, name: &str) -> String {
-        // If it's a path var, hint that --allow-absolute would unlock it
-        if allowlist::PATH_VARS.contains(&name) {
-            format!(
-                "variable '{}' expands to a path outside the working directory \
-                 (use --allow-absolute to allow)",
-                name
-            )
-        } else {
-            let mut approved: Vec<&str> = self.approved_vars.iter().map(|s| s.as_str()).collect();
-            approved.sort();
-            format!(
-                "variable '{}' not in approved list (approved: {})",
-                name,
-                approved.join(", ")
-            )
-        }
+        format!("variable '{}' is not allowed in arguments", name)
     }
 
     fn validate_command_substitution(&self, cmd_str: &str) -> Result<(), String> {
@@ -557,9 +531,9 @@ impl<'a> ValidatorContext<'a> {
         if stripped.starts_with('-') {
             return Ok(());
         }
-        if stripped.starts_with('/') && !self.config.allow_absolute {
+        if stripped.starts_with('/') {
             return Err(format!(
-                "absolute path '{}' in argument not allowed (use --allow-absolute)",
+                "absolute path '{}' in argument not allowed",
                 stripped
             ));
         }

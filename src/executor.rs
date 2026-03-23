@@ -75,34 +75,30 @@ impl Output {
 pub struct Executor {
     allowlist: Allowlist,
     working_dir: std::path::PathBuf,
-    allow_absolute: bool,
     allow_redirects: bool,
     max_output: usize,
     inherit_env: bool,
-    approved_vars: HashSet<String>,
+    forwarded_vars: HashSet<String>,
 }
 
 impl Executor {
     pub fn new(
         allowlist: Allowlist,
         working_dir: std::path::PathBuf,
-        allow_absolute: bool,
         allow_redirects: bool,
         max_output: usize,
         inherit_env: bool,
     ) -> Self {
-        let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter()
-            .chain(allowlist::PATH_VARS.iter())
+        let forwarded_vars: HashSet<String> = allowlist::FORWARDED_VARS.iter()
             .map(|s| s.to_string())
             .collect();
         Self {
             allowlist,
             working_dir,
-            allow_absolute,
             allow_redirects,
             max_output,
             inherit_env,
-            approved_vars,
+            forwarded_vars,
         }
     }
 
@@ -111,7 +107,6 @@ impl Executor {
         // Validate first
         let config = ValidatorConfig {
             allow_redirects: self.allow_redirects,
-            allow_absolute: self.allow_absolute,
         };
         if let Err(e) = validator::validate(program, &self.allowlist, &config) {
             return Output::error(e);
@@ -724,7 +719,6 @@ impl Executor {
                     results.extend(rsh_glob::expand_glob(
                         part,
                         &self.working_dir,
-                        self.allow_absolute,
                     )?);
                 } else {
                     results.push(part.to_string());
@@ -738,7 +732,7 @@ impl Executor {
 
         // Try glob expansion — only on words that have unquoted glob chars
         if pieces_have_unquoted_glob(&pieces) {
-            return rsh_glob::expand_glob(&expanded, &self.working_dir, self.allow_absolute);
+            return rsh_glob::expand_glob(&expanded, &self.working_dir);
         }
 
         Ok(vec![expanded])
@@ -869,7 +863,7 @@ impl Executor {
                 // Check local vars first, then environment
                 if let Some(val) = local_vars.get(name.as_str()) {
                     Ok(val.clone())
-                } else if self.approved_vars.contains(name.as_str()) {
+                } else if self.forwarded_vars.contains(name.as_str()) {
                     Ok(std::env::var(name).unwrap_or_default())
                 } else {
                     // Variable was validated — should be in approved list or local
@@ -924,7 +918,7 @@ impl Executor {
     fn configure_env(&self, process: &mut Command) {
         if !self.inherit_env {
             process.env_clear();
-            for var in &self.approved_vars {
+            for var in &self.forwarded_vars {
                 if let Ok(val) = std::env::var(var) {
                     process.env(var, val);
                 }
@@ -935,9 +929,6 @@ impl Executor {
     // --- Path checking ---
 
     /// Check expanded argument values for path traversal.
-    /// Only checks for '..' traversal, not absolute paths — variable/tilde expansion
-    /// legitimately produces absolute paths (e.g., $HOME -> /Users/foo), and the
-    /// absolute path check on raw literal values is handled by the validator.
     fn check_expanded_arg_path(&self, arg: &str) -> Result<(), String> {
         if arg.starts_with('-') {
             return Ok(());
@@ -1008,17 +999,13 @@ impl Executor {
                 return Ok(String::new());
             }
 
-            let path = if redirect.target.starts_with('/') {
-                if !self.allow_absolute {
-                    return Err(format!(
-                        "absolute redirect path '{}' not allowed (use --allow-absolute)",
-                        redirect.target
-                    ));
-                }
-                std::path::PathBuf::from(&redirect.target)
-            } else {
-                self.working_dir.join(&redirect.target)
-            };
+            if redirect.target.starts_with('/') {
+                return Err(format!(
+                    "absolute redirect path '{}' not allowed",
+                    redirect.target
+                ));
+            }
+            let path = self.working_dir.join(&redirect.target);
 
             // Path traversal guard
             let canon_working = self
