@@ -6,16 +6,16 @@ rsh is a command execution sandbox that gives AI agents safe, auditable access t
 
 AI agents need to run commands — searching code, reading files, inspecting systems. But giving an agent `bash -c` is giving it the keys to everything: arbitrary command chaining, file writes, network access, environment variable exfiltration.
 
-rsh closes that gap. It accepts a command string, parses it with [brush-parser](https://crates.io/crates/brush-parser) (a complete bash syntax parser), validates the entire AST against the security policy, and executes only what's allowed. Everything else is rejected with a structured JSON error before any process spawns.
+rsh closes that gap. It accepts a command string, parses it with [brush-parser](https://crates.io/crates/brush-parser) (a complete bash syntax parser), validates the entire AST against the security policy, and executes only what's allowed. Everything else is rejected with an error on stderr before any process spawns.
 
 **What rsh enforces:**
 - Only allowlisted commands can run (default: read-only tools like `grep`, `cat`, `ls`, `find`)
 - No file writes unless `--allow-redirects` is passed
-- No absolute paths or `..` traversal in arguments unless opted in
+- No absolute paths, `..` traversal, or tilde (`~`) in arguments
 - No function definitions, background execution (`&`), or process substitution
 - Environment is sanitized — child processes only see safe variables (`HOME`, `PATH`, etc.)
-- Variable references validated — only approved variables permitted (blocks `$SECRET`, `$API_KEY`)
-- Sub-command validation — `find -exec`, `xargs` sub-commands checked against allowlist
+- No environment variable references in arguments (blocks `$SECRET`, `$HOME`, etc.)
+- Dangerous flags blocked (`find -delete`/`-exec`, `fd --exec`, `sort -o`)
 - Output is capped at 10MB by default
 
 **What rsh allows:**
@@ -25,11 +25,11 @@ rsh closes that gap. It accepts a command string, parses it with [brush-parser](
 - While/until loops: `while grep -q TODO file; do echo waiting; done`
 - If/then/else: `if grep -q TODO src/main.rs; then echo found; fi`
 - Command substitution: `wc -l $(find src -name '*.rs')`
-- Case statements: `case $TERM in xterm*) echo yes;; esac`
+- Case statements: `for f in a.rs b.txt; do case "$f" in *.rs) echo rust;; esac; done`
 - Brace groups and subshells: `{ echo a; echo b; }`, `(echo sub)`
 - Quoted strings: `grep 'hello world' file.txt`
 - Globs: `ls *.toml`, `find . -name '*.rs'`
-- Variable expansion: `echo $HOME`, `echo "path is $PWD"`, `${VAR:-default}`
+- Variable expansion: `for f in *.rs; do echo "file: $f"; done`
 - Semicolons: `ls src; wc -l Cargo.toml`
 - Redirects (opt-in): `echo hello >> output.txt`
 
@@ -106,15 +106,17 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 | `--max-output <bytes>` | 10MB | Truncate combined stdout+stderr beyond this limit |
 | `--inherit-env` | off | Pass full parent environment to child processes |
 | `--dir <path>` | cwd | Set the working directory for command execution |
+| `--prime` | — | Print an LLM-ready description of rsh's capabilities |
+| `-c <cmd>` | — | Accept command after `-c` (bash compatibility) |
 
 ### Default allowlist
 
 ```
 grep, rg, ugrep, find, fd, cat, bat, head, tail, less, ls, eza, stat, file, du, wc, pwd, which,
-sort, uniq, cut, tr, sed, diff, comm, basename, dirname, realpath, echo, date, true, false, test, xargs
+sort, uniq, cut, tr, diff, comm, basename, dirname, realpath, echo, date, true, false, test
 ```
 
-Note: `sed -i`/`--in-place` is blocked (writes files in place). `find -delete` is blocked. `xargs` sub-commands are validated against the allowlist. `awk` is intentionally excluded — its `system()` function can execute arbitrary commands.
+Note: Dangerous flags are blocked — `find -delete`/`-exec`/`-execdir`/`-fprint`/etc., `fd -x`/`--exec`/`-X`/`--exec-batch`, `sort -o`/`--output`. `awk`, `sed`, and `xargs` are intentionally excluded — `awk`'s `system()` can execute arbitrary commands, and `sed`/`xargs` can write files or run sub-commands.
 
 Override with `--allow`, the `RSH_ALLOWLIST` environment variable, or a `~/.rsh/allowlist` config file (one command per line).
 
@@ -126,11 +128,11 @@ rsh is **defense in depth** — multiple independent layers, each sufficient to 
 |-------|---------------|
 | **Command allowlist** | Arbitrary binaries (`curl`, `rm`, `bash`, `python`) |
 | **Path rejection** | Path separators in command names (`/usr/bin/grep`, `./exploit`) |
-| **Argument traversal** | `..` path components and absolute paths in arguments |
+| **Argument traversal** | `..` path components, absolute paths, and tilde (`~`) in arguments |
 | **Redirect gating** | File writes disabled by default; path traversal guard when enabled |
 | **AST validation** | Function definitions, background `&`, process substitution, here-docs |
-| **Variable approval** | Only approved env vars (`HOME`, `PATH`, etc.); blocks `$SECRET`, `$API_KEY` |
-| **Sub-command validation** | `find -exec`, `xargs` sub-commands checked against allowlist |
+| **Variable rejection** | All env var references blocked in arguments (blocks `$SECRET`, `$HOME`, etc.) |
+| **Blocked flags** | `find -delete`/`-exec`, `fd --exec`, `sort -o` — dangerous flags on allowed commands |
 | **Environment sanitization** | Only approved variables forwarded to child processes |
 | **Signal handling** | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |
 | **Output limits** | Truncation prevents memory exhaustion from large output |
@@ -163,12 +165,12 @@ input string
      │
      ▼
   Validator   ──── walks AST, checks allowlist + security policy
-     │              rejects with structured JSON errors
+     │              rejects with error on stderr
      ▼
   Executor    ──── runs validated AST: spawns processes, wires pipes,
      │              handles loops/conditionals/substitution
      ▼
- JSON output
+ stdout/stderr/exit code
 ```
 
 The key principle: **parse everything, validate before executing.** brush-parser accepts all valid bash syntax. rsh's validator walks the AST and rejects anything outside the security policy. The executor then runs only validated programs.
@@ -177,7 +179,7 @@ The key principle: **parse everything, validate before executing.** brush-parser
 
 ```bash
 cargo build          # build
-cargo test           # run all tests (147 tests)
+cargo test           # run all tests (159 tests)
 cargo run -- "ls"    # run directly
 ```
 
