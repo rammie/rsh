@@ -5,24 +5,18 @@
 /// 2. Config file (~/.rsh/allowlist)
 /// 3. Environment variable RSH_ALLOWLIST
 /// 4. CLI flag --allow
-
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 const DEFAULT_ALLOWLIST: &[&str] = &[
     // Search
-    "grep", "rg", "ugrep",
-    // Find files
-    "find", "fd",
-    // Read files
-    "cat", "bat", "head", "tail", "less",
-    // List/inspect
+    "grep", "rg", "ugrep", // Find files
+    "find", "fd", // Read files
+    "cat", "bat", "head", "tail", "less", // List/inspect
     "ls", "eza", "stat", "file", "du", "wc", "pwd", "which",
     // Text processing (read-only)
-    "sort", "uniq", "cut", "tr", "diff", "comm",
-    // Path utilities
-    "basename", "dirname", "realpath",
-    // Misc
+    "sort", "uniq", "cut", "tr", "diff", "comm", // Path utilities
+    "basename", "dirname", "realpath", // Misc
     "echo", "date", "true", "false", "test",
 ];
 
@@ -42,7 +36,8 @@ pub struct Allowlist {
 impl Allowlist {
     /// Build the allowlist from all sources.
     pub fn load(cli_allow: Option<&str>) -> Self {
-        let mut commands: HashSet<String> = DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect();
+        let mut commands: HashSet<String> =
+            DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect();
 
         // Load from config file
         if let Some(config) = Self::load_config_file() {
@@ -51,7 +46,8 @@ impl Allowlist {
 
         // Override with env var
         if let Ok(env_val) = std::env::var("RSH_ALLOWLIST") {
-            commands = env_val.split(',')
+            commands = env_val
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -59,7 +55,8 @@ impl Allowlist {
 
         // Override with CLI flag
         if let Some(allow_str) = cli_allow {
-            commands = allow_str.split(',')
+            commands = allow_str
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();

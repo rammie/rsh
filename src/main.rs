@@ -21,7 +21,8 @@ fn prime(al: &Allowlist, allow_redirects: bool) {
     let has_rg = has_command("rg");
     let has_fd = has_command("fd");
 
-    print!("\
+    print!(
+        "\
 Use rsh for read-only shell operations. rsh works like bash but only permits specific commands.
 
 Usage: rsh -c \"<command>\"
@@ -46,7 +47,11 @@ Not allowed:
 
 Patterns for multi-step reads:
 ",
-        redirect_note = if allow_redirects { "" } else { "\n- File output redirects (> and >>)" },
+        redirect_note = if allow_redirects {
+            ""
+        } else {
+            "\n- File output redirects (> and >>)"
+        },
     );
     if has_rg {
         println!("  rg \"pattern\" -t rust -C 3                # search by content + file type");
@@ -56,14 +61,18 @@ Patterns for multi-step reads:
         println!("  fd -e rs | head -20                        # find files by extension");
     }
     println!("  grep pattern $(find . -name \"*.rs\")         # find by name, then search");
-    println!("  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect");
+    println!(
+        "  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect"
+    );
 
-    print!("\
+    print!(
+        "\
 \nBehavior:
 - stdout, stderr, and exit codes work exactly like bash
 - Rejected commands print an error to stderr and exit 1
 - Environment is sanitized (PATH, LANG, etc. are forwarded to commands)
-");
+"
+    );
     std::process::exit(0);
 }
 
@@ -201,13 +210,7 @@ fn main() {
     }
 
     // Execute
-    let executor = Executor::new(
-        al,
-        working_dir,
-        allow_redirects,
-        max_output,
-        inherit_env,
-    );
+    let executor = Executor::new(al, working_dir, allow_redirects, max_output, inherit_env);
     let output = executor.execute(&program);
     print!("{}", output.stdout);
     eprint!("{}", output.stderr);
