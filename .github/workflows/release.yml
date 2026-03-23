@@ -23,10 +23,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "" # read from rust-toolchain.toml
-          targets: ${{ matrix.target }}
+      - run: rustup show # installs toolchain from rust-toolchain.toml
+      - run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target ${{ matrix.target }}
       - run: tar czf rsh-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release rsh
