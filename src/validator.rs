@@ -14,7 +14,7 @@ use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
 use brush_parser::ParserOptions;
 
-use crate::allowlist::{self, Allowlist};
+use crate::allowlist::Allowlist;
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
@@ -40,7 +40,7 @@ pub fn validate(
     allowlist: &Allowlist,
     config: &ValidatorConfig,
 ) -> Result<Vec<String>, String> {
-    let approved_vars: HashSet<String> = allowlist::APPROVED_VARS.iter().map(|s| s.to_string()).collect();
+    let approved_vars: HashSet<String> = HashSet::new();
     let mut ctx = ValidatorContext {
         allowlist,
         config,

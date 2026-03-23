@@ -26,14 +26,10 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "echo", "date", "true", "false", "test",
 ];
 
-/// Environment variables approved for use in command arguments.
-/// Empty by default — no env var references are needed for codebase research.
-/// For-loop variables are approved dynamically by the validator.
-pub const APPROVED_VARS: &[&str] = &[];
-
 /// Environment variables forwarded to child processes for correct operation.
 /// These are NOT available for use in command arguments — they're only passed
-/// through to the spawned process environment.
+/// through to the spawned process environment. The only variables allowed in
+/// arguments are for-loop variables, which the validator approves dynamically.
 pub const FORWARDED_VARS: &[&str] = &[
     "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "TMPDIR",
 ];

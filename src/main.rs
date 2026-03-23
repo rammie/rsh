@@ -42,8 +42,7 @@ Not allowed:
 - Commands outside the allowlist above
 - Function definitions, background execution (&), process substitution
 - Path traversal (..) in arguments
-- Absolute paths, tilde (~), and environment variables in arguments
-- Variable references ($HOME, $USER, etc.) in arguments{redirect_note}
+- Absolute paths, tilde (~), and variable references ($HOME, etc.) in arguments{redirect_note}
 
 Patterns for multi-step reads:
 ",

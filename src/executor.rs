@@ -1,7 +1,6 @@
 /// Executor: walks the brush-parser AST, expands words, wires pipes, and spawns processes.
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -78,7 +77,6 @@ pub struct Executor {
     allow_redirects: bool,
     max_output: usize,
     inherit_env: bool,
-    forwarded_vars: HashSet<String>,
 }
 
 impl Executor {
@@ -89,16 +87,12 @@ impl Executor {
         max_output: usize,
         inherit_env: bool,
     ) -> Self {
-        let forwarded_vars: HashSet<String> = allowlist::FORWARDED_VARS.iter()
-            .map(|s| s.to_string())
-            .collect();
         Self {
             allowlist,
             working_dir,
             allow_redirects,
             max_output,
             inherit_env,
-            forwarded_vars,
         }
     }
 
@@ -860,13 +854,10 @@ impl Executor {
     ) -> Result<String, String> {
         match param {
             Parameter::Named(name) => {
-                // Check local vars first, then environment
+                // Check local vars first (for-loop variables), then environment
                 if let Some(val) = local_vars.get(name.as_str()) {
                     Ok(val.clone())
-                } else if self.forwarded_vars.contains(name.as_str()) {
-                    Ok(std::env::var(name).unwrap_or_default())
                 } else {
-                    // Variable was validated — should be in approved list or local
                     Ok(std::env::var(name).unwrap_or_default())
                 }
             }
@@ -918,7 +909,7 @@ impl Executor {
     fn configure_env(&self, process: &mut Command) {
         if !self.inherit_env {
             process.env_clear();
-            for var in &self.forwarded_vars {
+            for var in allowlist::FORWARDED_VARS {
                 if let Ok(val) = std::env::var(var) {
                     process.env(var, val);
                 }

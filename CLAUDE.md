@@ -22,7 +22,7 @@ rsh is a restricted shell for AI agents — a command execution sandbox written 
 The pipeline is: **parse → validate → execute**. All validation happens before any process spawns.
 
 - **`main.rs`** — CLI argument parsing, wires together allowlist → parser → executor
-- **`allowlist.rs`** — Manages the command allowlist (built-in defaults, `~/.rsh/allowlist` config file, `RSH_ALLOWLIST` env var, `--allow` CLI flag; last wins). Defines `FORWARDED_VARS` (env vars passed to child processes) and `APPROVED_VARS` (env vars allowed in command arguments — currently empty).
+- **`allowlist.rs`** — Manages the command allowlist (built-in defaults, `~/.rsh/allowlist` config file, `RSH_ALLOWLIST` env var, `--allow` CLI flag; last wins). Defines `FORWARDED_VARS` (env vars passed to child processes; not available in command arguments).
 - **`validator.rs`** — Recursive AST security walker. Walks every node in a `brush_parser::ast::Program` and enforces: command allowlist, blocked flags (find -delete, sed -i), variable reference approval, redirect gating, path traversal checks, rejection of function defs/background/process substitution, and sub-command validation (find -exec, xargs).
 - **`executor.rs`** — Walks the validated AST, expands words (variables, globs, command substitution), wires pipes between pipeline stages, handles loops/conditionals, spawns processes with sanitized environment. Manages signal handling (SIGINT/SIGTERM) and output truncation.
 - **`glob.rs`** — Glob expansion scoped to working directory with path traversal and absolute path guards.
