@@ -46,6 +46,7 @@ IMPORTANT — use relative paths only:
 Not allowed:
 - awk, sed, xargs (use cut, grep, command substitution, and for-loops instead)
 - find -exec / -execdir (use command substitution or for-loops instead)
+- Instead of: find . | xargs grep pattern → use: grep -r pattern . OR grep pattern $(find . -name '*.ext')
 - Commands outside the allowlist above
 - Function definitions, background execution (&), process substitution{redirect_note}
 

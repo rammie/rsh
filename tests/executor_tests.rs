@@ -411,6 +411,52 @@ fn test_redirect_on_non_final_pipeline_rejected() {
     );
 }
 
+#[test]
+fn test_stderr_to_dev_null_on_non_final_pipeline_allowed() {
+    let output = rsh_bin()
+        .arg("echo hello 2>/dev/null | head -1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello");
+}
+
+#[test]
+fn test_fd_dup_on_non_final_pipeline_allowed() {
+    let output = rsh_bin()
+        .arg("echo hello 2>&1 | head -1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello");
+}
+
+#[test]
+fn test_file_redirect_on_non_final_pipeline_still_rejected() {
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("echo hi > /tmp/test.txt | head")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("non-final pipeline command"),
+        "stderr was: {}",
+        stderr
+    );
+}
+
 // --- Dangerous sub-command arguments / -exec validation ---
 
 #[test]

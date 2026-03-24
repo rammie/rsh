@@ -202,15 +202,7 @@ impl<'a> ValidatorContext<'a> {
 
         // Validate redirects
         if !redirects.is_empty() {
-            if pipeline_idx < pipeline_len - 1 {
-                return Err(format!(
-                    "redirects on non-final pipeline command '{}' are not supported",
-                    cmd_name
-                ));
-            }
-            for r in &redirects {
-                self.validate_io_redirect(r)?;
-            }
+            self.validate_redirects(&redirects, pipeline_idx, pipeline_len, &cmd_name)?;
         }
 
         // Validate variable references and command substitutions in all words
@@ -410,6 +402,29 @@ impl<'a> ValidatorContext<'a> {
         Ok(())
     }
 
+    /// Check if a redirect is safe to use on non-final pipeline commands.
+    /// Allows: fd duplication (2>&1), writes to /dev/null (2>/dev/null, &>/dev/null).
+    fn is_safe_redirect(redirect: &IoRedirect) -> bool {
+        match redirect {
+            IoRedirect::File(_, kind, target) => match kind {
+                IoFileRedirectKind::DuplicateInput | IoFileRedirectKind::DuplicateOutput => {
+                    matches!(
+                        target,
+                        IoFileRedirectTarget::Fd(_) | IoFileRedirectTarget::Duplicate(_)
+                    )
+                }
+                IoFileRedirectKind::Write
+                | IoFileRedirectKind::Append
+                | IoFileRedirectKind::Clobber => {
+                    matches!(target, IoFileRedirectTarget::Filename(w) if w.value == "/dev/null")
+                }
+                _ => false,
+            },
+            IoRedirect::OutputAndError(target, _) => target.value == "/dev/null",
+            _ => false,
+        }
+    }
+
     fn validate_io_redirect(&self, redirect: &IoRedirect) -> Result<(), String> {
         match redirect {
             IoRedirect::File(_, kind, target) => {
@@ -489,13 +504,26 @@ impl<'a> ValidatorContext<'a> {
         pipeline_len: usize,
         context: &str,
     ) -> Result<(), String> {
-        if pipeline_idx < pipeline_len - 1 {
-            return Err(format!(
-                "redirects on non-final pipeline command '{}' are not supported",
-                context
-            ));
-        }
-        for r in &redirect_list.0 {
+        let refs: Vec<&IoRedirect> = redirect_list.0.iter().collect();
+        self.validate_redirects(&refs, pipeline_idx, pipeline_len, context)
+    }
+
+    fn validate_redirects(
+        &self,
+        redirects: &[&IoRedirect],
+        pipeline_idx: usize,
+        pipeline_len: usize,
+        context: &str,
+    ) -> Result<(), String> {
+        let is_mid_pipeline = pipeline_idx < pipeline_len - 1;
+        for r in redirects {
+            if is_mid_pipeline && !Self::is_safe_redirect(r) {
+                return Err(format!(
+                    "redirects on non-final pipeline command '{}' are not supported \
+                     (2>/dev/null and 2>&1 are allowed)",
+                    context
+                ));
+            }
             self.validate_io_redirect(r)?;
         }
         Ok(())
