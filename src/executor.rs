@@ -465,6 +465,11 @@ impl Executor {
             None => return Err("empty command".to_string()),
         };
 
+        // Defense-in-depth: re-validate the expanded command name against
+        // the allowlist and ALWAYS_BLOCKED. The validator checks the raw
+        // Word.value, but expansion could change it (e.g., via variables).
+        validator::check_command_allowed(&name, &self.allowlist)?;
+
         let mut args = Vec::new();
         let mut redirects = Vec::new();
         let mut stderr_behavior = StderrBehavior::Capture;
@@ -492,6 +497,11 @@ impl Executor {
                 _ => {}
             }
         }
+
+        // Re-check blocked flags on expanded args. The validator checks
+        // literal Word.value strings, but expansion (command substitution,
+        // for-loop variables, globs) can produce blocked flags at runtime.
+        validator::check_blocked_flags_expanded(&name, &args)?;
 
         Ok((name, args, redirects, stderr_behavior))
     }

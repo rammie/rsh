@@ -18,6 +18,7 @@ use crate::allowlist::Allowlist;
 /// Commands that are always blocked, even if added to the allowlist via --allow.
 /// These commands have built-in capabilities that bypass rsh's security model.
 const ALWAYS_BLOCKED: &[(&str, &str)] = &[
+    // Text processors with hidden execution capabilities
     (
         "awk",
         "awk can execute arbitrary commands via system() and write files",
@@ -42,6 +43,36 @@ const ALWAYS_BLOCKED: &[(&str, &str)] = &[
         "gsed",
         "gsed can execute arbitrary commands ('e') and read/write arbitrary files (r/w commands)",
     ),
+    // Shells — bypass rsh's entire security model
+    ("sh", "sh executes arbitrary commands, bypassing rsh"),
+    ("bash", "bash executes arbitrary commands, bypassing rsh"),
+    ("zsh", "zsh executes arbitrary commands, bypassing rsh"),
+    ("dash", "dash executes arbitrary commands, bypassing rsh"),
+    ("ksh", "ksh executes arbitrary commands, bypassing rsh"),
+    ("csh", "csh executes arbitrary commands, bypassing rsh"),
+    ("tcsh", "tcsh executes arbitrary commands, bypassing rsh"),
+    ("fish", "fish executes arbitrary commands, bypassing rsh"),
+    // Commands that spawn arbitrary subprocesses
+    (
+        "env",
+        "env can execute arbitrary commands (env cmd args...)",
+    ),
+    (
+        "xargs",
+        "xargs can execute arbitrary commands from stdin",
+    ),
+    // Scripting interpreters — arbitrary code execution
+    (
+        "python",
+        "python executes arbitrary code, bypassing rsh",
+    ),
+    (
+        "python3",
+        "python3 executes arbitrary code, bypassing rsh",
+    ),
+    ("perl", "perl executes arbitrary code, bypassing rsh"),
+    ("ruby", "ruby executes arbitrary code, bypassing rsh"),
+    ("node", "node executes arbitrary code, bypassing rsh"),
 ];
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
@@ -189,22 +220,7 @@ impl<'a> ValidatorContext<'a> {
             }
         };
 
-        // Hard-block dangerous commands even if added to the allowlist
-        if let Some((_, reason)) = ALWAYS_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
-            return Err(format!(
-                "command '{}' is blocked even with --allow: {}",
-                cmd_name, reason
-            ));
-        }
-
-        // Check allowlist
-        if !self.allowlist.is_allowed(&cmd_name) {
-            return Err(format!(
-                "command '{}' not in allowlist (allowed: {})",
-                cmd_name,
-                self.allowlist.allowed_commands().join(", ")
-            ));
-        }
+        check_command_allowed(&cmd_name, self.allowlist)?;
         self.command_names.push(cmd_name.clone());
 
         // Collect all argument words and redirects from prefix + suffix
@@ -667,26 +683,7 @@ impl<'a> ValidatorContext<'a> {
 
     /// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
     fn check_blocked_flags(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
-        if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd) {
-            for arg in args {
-                if blocked_flags.contains(arg) {
-                    return Err(format!("'{}' flag on '{}' is not allowed", arg, cmd));
-                }
-            }
-        }
-        if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd) {
-            for arg in args {
-                for prefix in *blocked_prefixes {
-                    if arg.starts_with(prefix) {
-                        return Err(format!(
-                            "'{}' flag on '{}' is not allowed (writes files in place)",
-                            arg, cmd
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
+        check_blocked_flags(cmd, args)
     }
 
     /// Check a regular command argument for absolute paths and path traversal.
@@ -743,6 +740,60 @@ fn check_path_value(value: &str) -> Result<(), String> {
         return Err(format!(
             "path traversal ('..') in argument '{}' not allowed",
             value
+        ));
+    }
+    Ok(())
+}
+
+/// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
+/// Used at validation time (on literal args) and at execution time (on expanded args)
+/// to catch blocked flags like `find -delete` or `sort -o`.
+pub fn check_blocked_flags(cmd: &str, args: &[&str]) -> Result<(), String> {
+    if let Some((_, blocked_flags)) = UNCONDITIONALLY_BLOCKED.iter().find(|(c, _)| *c == cmd) {
+        for arg in args {
+            if blocked_flags.contains(arg) {
+                return Err(format!("'{}' flag on '{}' is not allowed", arg, cmd));
+            }
+        }
+    }
+    if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd) {
+        for arg in args {
+            for prefix in *blocked_prefixes {
+                if arg.starts_with(prefix) {
+                    return Err(format!(
+                        "'{}' flag on '{}' is not allowed (writes files in place)",
+                        arg, cmd
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Convenience wrapper for `check_blocked_flags` when args are `&[String]`.
+pub fn check_blocked_flags_expanded(cmd: &str, args: &[String]) -> Result<(), String> {
+    let refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    check_blocked_flags(cmd, &refs)
+}
+
+/// Check that a command name is permitted: not in ALWAYS_BLOCKED and present in the allowlist.
+/// Used at validation time (on literal names) and at execution time (on expanded names).
+pub fn check_command_allowed(
+    name: &str,
+    allowlist: &crate::allowlist::Allowlist,
+) -> Result<(), String> {
+    if let Some((_, reason)) = ALWAYS_BLOCKED.iter().find(|(c, _)| *c == name) {
+        return Err(format!(
+            "command '{}' is blocked even with --allow: {}",
+            name, reason
+        ));
+    }
+    if !allowlist.is_allowed(name) {
+        return Err(format!(
+            "command '{}' not in allowlist (allowed: {})",
+            name,
+            allowlist.allowed_commands().join(", ")
         ));
     }
     Ok(())

@@ -349,12 +349,13 @@ fn test_double_quoted_unapproved_var_rejected_at_validate() {
 // --- S5: environment sanitization ---
 #[test]
 fn test_env_sanitized_by_default() {
-    // Set a custom env var and verify the child can't see it
+    // Set a custom env var and verify the child can't see it.
+    // Use printenv (allowed via --allow) instead of env (hard-blocked).
     let output = rsh_bin()
         .env("RSH_TEST_SECRET", "supersecret")
         .arg("--allow")
-        .arg("env")
-        .arg("env")
+        .arg("printenv")
+        .arg("printenv")
         .output()
         .unwrap();
     assert!(
@@ -377,8 +378,8 @@ fn test_env_inherited_with_flag() {
         .env("RSH_TEST_VISIBLE", "yes")
         .arg("--inherit-env")
         .arg("--allow")
-        .arg("env")
-        .arg("env")
+        .arg("printenv")
+        .arg("printenv")
         .output()
         .unwrap();
     assert!(
@@ -391,6 +392,23 @@ fn test_env_inherited_with_flag() {
         stdout.contains("RSH_TEST_VISIBLE"),
         "env not inherited: {}",
         stdout
+    );
+}
+
+#[test]
+fn test_env_hard_blocked_even_with_allow() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("env")
+        .arg("env")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr was: {}",
+        stderr
     );
 }
 
@@ -562,13 +580,30 @@ fn test_sed_hard_blocked_even_with_allow() {
 }
 
 #[test]
-fn test_xargs_not_in_default_allowlist() {
+fn test_xargs_hard_blocked() {
     let output = rsh_bin().arg("echo hello | xargs echo").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("xargs"), "stderr was: {}", stderr);
     assert!(
-        stderr.contains("not in allowlist"),
+        stderr.contains("blocked even with --allow"),
+        "stderr was: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_xargs_hard_blocked_even_with_allow() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("xargs,echo")
+        .arg("echo hello | xargs echo")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
         "stderr was: {}",
         stderr
     );
@@ -1997,5 +2032,256 @@ fn test_stderr_merge_to_stdout_on_non_final_pipeline() {
         count >= 1,
         "grep should find 'No such file' in merged output, got count: {}",
         count
+    );
+}
+
+// --- Blocked flag bypass via expansion ---
+
+#[test]
+fn test_find_delete_blocked_via_command_substitution() {
+    // Critical: $(echo -delete) should not bypass blocked flag check
+    let output = rsh_bin()
+        .arg("find . $(echo -delete)")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-delete") && stderr.contains("not allowed"),
+        "blocked flag via command substitution should be caught, stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_find_exec_blocked_via_command_substitution() {
+    // Critical: $(echo -exec) should not bypass blocked flag check
+    let output = rsh_bin()
+        .arg("find . $(echo -exec) cat {} \\;")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-exec") && stderr.contains("not allowed"),
+        "blocked flag via command substitution should be caught, stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_find_execdir_blocked_via_command_substitution() {
+    let output = rsh_bin()
+        .arg("find . $(echo -execdir) cat {} \\;")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-execdir") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_find_fprint_blocked_via_command_substitution() {
+    let output = rsh_bin()
+        .arg("find . $(echo -fprint) leaked.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-fprint") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_find_delete_blocked_via_for_loop_variable() {
+    // Critical: for-loop variable expanding to blocked flag should be caught
+    let output = rsh_bin()
+        .arg("for x in -delete; do find . $x; done")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-delete") && stderr.contains("not allowed"),
+        "blocked flag via for-loop variable should be caught, stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_find_exec_blocked_via_for_loop_variable() {
+    let output = rsh_bin()
+        .arg("for x in -exec; do find . $x cat {} \\;; done")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-exec") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_fd_exec_blocked_via_command_substitution() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("fd,echo")
+        .arg("fd pattern $(echo --exec) cat")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--exec") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sort_output_blocked_via_command_substitution() {
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("sort $(echo -o) output.txt input.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-o") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sort_output_blocked_via_for_loop_variable() {
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("for x in -ofoo; do sort $x input.txt; done")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("-o") && stderr.contains("not allowed"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+// --- Hard-blocked commands ---
+
+#[test]
+fn test_sh_hard_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("sh")
+        .arg("sh -c 'echo hello'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_bash_hard_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("bash")
+        .arg("bash -c 'echo hello'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_python_hard_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("python")
+        .arg("python -c 'print(1)'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_node_hard_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("node")
+        .arg("node -e 'console.log(1)'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_perl_hard_blocked() {
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("perl")
+        .arg("perl -e 'print 1'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+// --- Defense-in-depth: expanded command name re-validation ---
+
+#[test]
+fn test_expanded_command_name_blocked() {
+    // Variable in command position should fail at validation (not in allowlist),
+    // but even if it somehow reached execution, the expanded name check catches it.
+    let output = rsh_bin()
+        .arg("for cmd in cat; do $cmd --help; done")
+        .output()
+        .unwrap();
+    // The raw "$cmd" is not in the allowlist, so validation rejects it
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "stderr: {}",
+        stderr
     );
 }
