@@ -1032,3 +1032,296 @@ fn test_sed_in_place_blocked_when_in_allowlist() {
         stderr
     );
 }
+
+// --- Parameter expansion sub-expression validation ---
+
+#[test]
+fn test_param_default_command_substitution_blocked() {
+    // ${var:-$(cmd)} should be rejected: the command substitution in the default
+    // value must be validated, not silently executed.
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:-$(id)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in parameter default should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_default_command_substitution_allowed_command_blocked() {
+    // Even if the inner command is allowlisted, the variable reference in the
+    // default should still be validated (e.g., if it references unapproved vars).
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:-$(echo $HOME)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "unapproved var in param default's command substitution should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed"),
+        "expected variable rejection, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_default_with_allowed_command_passes() {
+    // ${var:-$(echo safe)} where the inner command is fully valid should work.
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:-$(echo fallback)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "valid command substitution in param default should pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "fallback");
+}
+
+#[test]
+fn test_param_default_literal_value_still_works() {
+    // ${var:-literal} without command substitution should continue to work.
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:-default_val}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "literal param default should work, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "default_val");
+}
+
+#[test]
+fn test_param_alternative_command_substitution_blocked() {
+    // ${var:+$(cmd)} — alternative value should also be validated.
+    let output = rsh_bin()
+        .arg(r#"for x in "notempty"; do echo "${x:+$(id)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in parameter alternative should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_error_command_substitution_blocked() {
+    // ${var:?$(cmd)} — error message should also be validated.
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:?$(id)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in parameter error should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_pattern_command_substitution_blocked() {
+    // ${var%$(cmd)} — suffix pattern should also be validated.
+    let output = rsh_bin()
+        .arg(r#"for x in "hello"; do echo "${x%$(id)}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in parameter pattern should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_replace_command_substitution_blocked() {
+    // ${var/$(cmd)/replacement} — replace pattern should also be validated.
+    let output = rsh_bin()
+        .arg(r#"for x in "hello"; do echo "${x/$(id)/world}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in parameter replace pattern should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_param_backtick_substitution_in_default_blocked() {
+    // ${var:-`cmd`} — backtick command substitution should also be validated.
+    let output = rsh_bin()
+        .arg(r#"for x in ""; do echo "${x:-`id`}"; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "backtick command substitution in parameter default should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("not allowed"),
+        "expected allowlist rejection for 'id', got: {}",
+        stderr
+    );
+}
+
+// --- &> and &>> redirect execution ---
+
+#[test]
+fn test_output_and_error_redirect_write() {
+    let tmp = std::env::temp_dir();
+    let workdir = tmp.join("rsh_test_output_and_error");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let outfile = workdir.join("combined.txt");
+    // Clean up from previous runs
+    let _ = std::fs::remove_file(&outfile);
+
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("echo hello &> combined.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let contents = std::fs::read_to_string(&outfile).unwrap();
+    assert_eq!(contents.trim(), "hello");
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&workdir);
+}
+
+#[test]
+fn test_output_and_error_redirect_append() {
+    let tmp = std::env::temp_dir();
+    let workdir = tmp.join("rsh_test_output_and_error_append");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let outfile = workdir.join("combined.txt");
+    let _ = std::fs::remove_file(&outfile);
+
+    // First write
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("echo first &> combined.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Append
+    let output2 = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("echo second &>> combined.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output2.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
+
+    let contents = std::fs::read_to_string(&outfile).unwrap();
+    assert!(
+        contents.contains("first") && contents.contains("second"),
+        "expected both lines in file, got: {}",
+        contents
+    );
+
+    let _ = std::fs::remove_dir_all(&workdir);
+}
+
+#[test]
+fn test_output_and_error_redirect_blocked_without_flag() {
+    let output = rsh_bin()
+        .arg("echo hello &> out.txt")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "&> should be blocked without --allow-redirects"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed"),
+        "expected redirect rejection, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_output_and_error_redirect_to_dev_null_allowed() {
+    let output = rsh_bin()
+        .arg("echo hello &> /dev/null")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "&> /dev/null should be allowed without --allow-redirects, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // stdout should be empty since it went to /dev/null
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout, "");
+}
+
+#[test]
+fn test_output_and_error_redirect_path_traversal_blocked() {
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("echo hello &> ../escape.txt")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "&> with path traversal should be blocked"
+    );
+}

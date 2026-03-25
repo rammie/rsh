@@ -45,3 +45,4 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Environment sanitized by default (only `FORWARDED_VARS` like PATH, LANG forwarded to children; no env vars allowed in arguments)
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)
 - `--prime` flag outputs an LLM-ready description of capabilities
+- Symlink traversal is a non-goal: rsh restricts which commands can run and validates argument strings for path traversal, but does not prevent commands from following symlinks to files outside the working directory. The caller is responsible for ensuring the working directory does not contain symlinks to sensitive locations.

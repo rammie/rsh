@@ -932,6 +932,19 @@ impl Executor {
                     target: target_str,
                 }])
             }
+            IoRedirect::OutputAndError(target, append) => {
+                // &> file or &>> file — redirect both stdout and stderr to file
+                let target_str = self.expand_word_to_string(target, local_vars)?;
+                let kind = if *append {
+                    RedirectKindSimple::Append
+                } else {
+                    RedirectKindSimple::Overwrite
+                };
+                Ok(vec![RedirectInfo {
+                    kind,
+                    target: target_str,
+                }])
+            }
             _ => Ok(Vec::new()),
         }
     }

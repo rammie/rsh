@@ -302,9 +302,16 @@ impl<'a> ValidatorContext<'a> {
 
     /// Validate a Word for variable references and command substitutions.
     fn validate_word(&self, word: &Word) -> Result<(), String> {
+        self.validate_word_str(&word.value)
+    }
+
+    /// Validate a raw string as a word — parses it for variable references,
+    /// command substitutions, etc. Used for both Word values and sub-expression
+    /// strings inside parameter expansions.
+    fn validate_word_str(&self, s: &str) -> Result<(), String> {
         let opts = ParserOptions::default();
         let pieces =
-            word::parse(&word.value, &opts).map_err(|e| format!("word parse error: {}", e))?;
+            word::parse(s, &opts).map_err(|e| format!("word parse error: {}", e))?;
         for piece_with_source in &pieces {
             self.validate_word_piece(&piece_with_source.piece)?;
         }
@@ -340,36 +347,106 @@ impl<'a> ValidatorContext<'a> {
     }
 
     fn validate_parameter_expr(&self, expr: &ParameterExpr) -> Result<(), String> {
+        // Helper: validate an optional sub-expression string inline.
+        let validate_opt = |opt: &Option<String>| -> Result<(), String> {
+            if let Some(s) = opt {
+                self.validate_word_str(s)?;
+            }
+            Ok(())
+        };
+
         let param = match expr {
-            ParameterExpr::Parameter { parameter, .. } => parameter,
-            ParameterExpr::UseDefaultValues { parameter, .. } => parameter,
-            ParameterExpr::AssignDefaultValues { parameter, .. } => parameter,
-            ParameterExpr::IndicateErrorIfNullOrUnset { parameter, .. } => parameter,
-            ParameterExpr::UseAlternativeValue { parameter, .. } => parameter,
-            ParameterExpr::ParameterLength { parameter, .. } => parameter,
-            ParameterExpr::RemoveSmallestSuffixPattern { parameter, .. } => parameter,
-            ParameterExpr::RemoveLargestSuffixPattern { parameter, .. } => parameter,
-            ParameterExpr::RemoveSmallestPrefixPattern { parameter, .. } => parameter,
-            ParameterExpr::RemoveLargestPrefixPattern { parameter, .. } => parameter,
-            ParameterExpr::Substring { parameter, .. } => parameter,
-            ParameterExpr::Transform { parameter, .. } => parameter,
-            ParameterExpr::UppercaseFirstChar { parameter, .. } => parameter,
-            ParameterExpr::UppercasePattern { parameter, .. } => parameter,
-            ParameterExpr::LowercaseFirstChar { parameter, .. } => parameter,
-            ParameterExpr::LowercasePattern { parameter, .. } => parameter,
-            ParameterExpr::ReplaceSubstring { parameter, .. } => parameter,
+            ParameterExpr::Parameter { parameter, .. }
+            | ParameterExpr::ParameterLength { parameter, .. }
+            | ParameterExpr::Substring { parameter, .. }
+            | ParameterExpr::Transform { parameter, .. } => parameter,
+            ParameterExpr::UseDefaultValues {
+                parameter,
+                default_value,
+                ..
+            } => {
+                validate_opt(default_value)?;
+                parameter
+            }
+            ParameterExpr::AssignDefaultValues {
+                parameter,
+                default_value,
+                ..
+            } => {
+                validate_opt(default_value)?;
+                parameter
+            }
+            ParameterExpr::IndicateErrorIfNullOrUnset {
+                parameter,
+                error_message,
+                ..
+            } => {
+                validate_opt(error_message)?;
+                parameter
+            }
+            ParameterExpr::UseAlternativeValue {
+                parameter,
+                alternative_value,
+                ..
+            } => {
+                validate_opt(alternative_value)?;
+                parameter
+            }
+            ParameterExpr::RemoveSmallestSuffixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveLargestSuffixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveSmallestPrefixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::RemoveLargestPrefixPattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::UppercaseFirstChar {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::UppercasePattern {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::LowercaseFirstChar {
+                parameter, pattern, ..
+            }
+            | ParameterExpr::LowercasePattern {
+                parameter, pattern, ..
+            } => {
+                validate_opt(pattern)?;
+                parameter
+            }
+            ParameterExpr::ReplaceSubstring {
+                parameter,
+                pattern,
+                replacement,
+                ..
+            } => {
+                self.validate_word_str(pattern)?;
+                validate_opt(replacement)?;
+                parameter
+            }
             ParameterExpr::VariableNames { .. } => return Ok(()),
             ParameterExpr::MemberKeys { .. } => return Ok(()),
         };
 
+        // Validate the parameter name
         match param {
             Parameter::Named(name) => {
                 if !self.approved_vars.contains(name.as_str()) {
                     return Err(self.var_not_approved_error(name));
                 }
             }
-            Parameter::NamedWithIndex { name, .. }
-            | Parameter::NamedWithAllIndices { name, .. } => {
+            Parameter::NamedWithIndex { name, index } => {
+                if !self.approved_vars.contains(name.as_str()) {
+                    return Err(self.var_not_approved_error(name));
+                }
+                self.validate_word_str(index)?;
+            }
+            Parameter::NamedWithAllIndices { name, .. } => {
                 if !self.approved_vars.contains(name.as_str()) {
                     return Err(self.var_not_approved_error(name));
                 }
@@ -378,6 +455,7 @@ impl<'a> ValidatorContext<'a> {
             // are safe — they don't leak env vars.
             Parameter::Special(_) | Parameter::Positional(_) => {}
         }
+
         Ok(())
     }
 
