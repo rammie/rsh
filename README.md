@@ -112,7 +112,7 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 ### Default allowlist
 
 ```
-grep, rg, ugrep, find, fd, cat, bat, head, tail, less, ls, eza, stat, file, du, wc, pwd, which,
+grep, rg, ugrep, find, fd, cat, bat, head, tail, ls, eza, stat, file, du, wc, pwd, which,
 sort, uniq, cut, tr, diff, comm, basename, dirname, realpath, echo, date, true, false, test
 ```
 

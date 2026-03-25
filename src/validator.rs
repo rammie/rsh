@@ -697,17 +697,33 @@ impl<'a> ValidatorContext<'a> {
 }
 
 /// Check an argument string for absolute paths and path traversal.
-/// For flags (args starting with `-`), checks the value portion after `=` if present.
+/// For flags (args starting with `-`), checks:
+///   - The value portion after `=` (e.g., `--file=/etc/passwd`)
+///   - The value concatenated after a short flag letter (e.g., `-f/etc/passwd`,
+///     `-f../../secret`) — many commands accept `-f<value>` as equivalent to `-f <value>`.
 pub fn check_arg_path_safety(arg: &str) -> Result<(), String> {
     if arg.starts_with('-') {
-        // Check flag values like --file=/etc/passwd or --from-file=../../secret.
-        // Note: the caller (check_arg_path) strip_quotes the outer arg, but that
-        // won't match asymmetric cases like --file="/etc/passwd", so we also
-        // strip_quotes on the value portion here.
-        if let Some(eq_pos) = arg.find('=') {
+        // Flags with `=`: check the value portion (e.g., --file=/etc/passwd, -f=../../secret)
+        let has_eq = arg.find('=');
+        if let Some(eq_pos) = has_eq {
             let value = &arg[eq_pos + 1..];
             if !value.is_empty() {
                 return check_path_value(strip_quotes(value));
+            }
+        }
+        // Short flags: after the leading `-` and flag letter(s), any remaining
+        // characters are a concatenated value (e.g., `-f../../secret`).
+        // Skip purely-alphabetic flag clusters like `-rn` or `-la`.
+        if !arg.starts_with("--") && has_eq.is_none() {
+            let after_dash = &arg[1..];
+            // Find where the flag letters end and the value begins.
+            // Flag letters are ASCII alphabetic; once we hit a non-alpha char
+            // (/, ., digit for paths), that's the start of an embedded value.
+            if let Some(value_start) = after_dash.find(|c: char| !c.is_ascii_alphabetic()) {
+                let value = &after_dash[value_start..];
+                if !value.is_empty() {
+                    return check_path_value(strip_quotes(value));
+                }
             }
         }
         return Ok(());

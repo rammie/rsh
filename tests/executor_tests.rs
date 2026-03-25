@@ -1764,3 +1764,238 @@ fn test_arithmetic_expression_safe_passes() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+// ============================================================
+// Concatenated short-flag path bypass prevention
+// ============================================================
+
+#[test]
+fn test_concatenated_flag_absolute_path_blocked() {
+    // grep -f/etc/passwd . — should be caught even without '='
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("grep -f/etc/passwd .")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "concatenated short flag with absolute path should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("absolute path"),
+        "expected absolute path error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_concatenated_flag_path_traversal_blocked() {
+    // grep -f../../etc/passwd . — path traversal via concatenated short flag
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("grep -f../../etc/passwd .")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "concatenated short flag with path traversal should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("path traversal"),
+        "expected path traversal error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_concatenated_flag_rg_pattern_file_blocked() {
+    // rg -f../../etc/passwd . — same attack with ripgrep
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("rg -f../../etc/passwd .")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "rg -f with path traversal should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("path traversal"),
+        "expected path traversal error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_concatenated_flag_file_command_blocked() {
+    // file -f../../etc/passwd — reads filenames from arbitrary file
+    let output = rsh_bin()
+        .arg("file -f../../etc/passwd")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "file -f with path traversal should be blocked"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("path traversal"),
+        "expected path traversal error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_concatenated_flag_letters_only_still_allowed() {
+    // grep -rn — purely alphabetic flag cluster should still work
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("grep -rn fn src/main.rs")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "purely alphabetic flags should still work, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_concatenated_flag_with_number_allowed() {
+    // head -n5 — numeric value after flag letter should be allowed (not a path)
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("head -n5 Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "numeric flag value should still work, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_concatenated_flag_relative_path_allowed() {
+    // grep -f with a relative path (no traversal) should be allowed
+    // Use Cargo.toml as the pattern file — it exists and has content
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("grep -fCargo.toml Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "concatenated flag with relative path should work, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_concatenated_flag_post_expansion_blocked() {
+    // for f in ../../etc; do grep -f"$f"/passwd .; done
+    // The for-loop value itself has .. so the validator catches it
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg(r#"for f in "../../etc"; do grep -f"$f"/passwd .; done"#)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "for-loop value with path traversal should be blocked"
+    );
+}
+
+// ============================================================
+// less removed from default allowlist
+// ============================================================
+
+#[test]
+fn test_less_not_in_default_allowlist() {
+    // less has interactive escape capabilities (pipe to commands, open editor)
+    // and should not be in the default allowlist
+    let output = rsh_bin().arg("less Cargo.toml").output().unwrap();
+    assert!(
+        !output.status.success(),
+        "less should not be in default allowlist"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "expected allowlist rejection, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_less_allowed_with_explicit_allow() {
+    // less can still be added explicitly via --allow
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("less")
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("less Cargo.toml")
+        .output()
+        .unwrap();
+    // We don't assert success because less may fail without a TTY,
+    // but it should NOT fail with "not in allowlist"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("not in allowlist"),
+        "less should be allowed with explicit --allow, got: {}",
+        stderr
+    );
+}
+
+// ============================================================
+// Stderr redirect execution on non-final pipeline commands
+// ============================================================
+
+#[test]
+fn test_stderr_devnull_on_non_final_pipeline_suppresses_stderr() {
+    // ls on a nonexistent file writes to stderr; 2>/dev/null should suppress it
+    let output = rsh_bin()
+        .arg("ls nonexistent_file_xyz 2>/dev/null | head -1")
+        .output()
+        .unwrap();
+    // ls will fail, but stderr should be suppressed
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("No such file"),
+        "stderr should be suppressed by 2>/dev/null, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_stderr_merge_to_stdout_on_non_final_pipeline() {
+    // ls nonexistent 2>&1 | grep "No such file" — stderr merged to stdout,
+    // so the next command in the pipeline can see it
+    let output = rsh_bin()
+        .arg("ls nonexistent_file_xyz 2>&1 | grep -c 'No such file'")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "2>&1 should merge stderr into stdout for the pipeline, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let count: i32 = stdout.trim().parse().unwrap_or(0);
+    assert!(
+        count >= 1,
+        "grep should find 'No such file' in merged output, got count: {}",
+        count
+    );
+}

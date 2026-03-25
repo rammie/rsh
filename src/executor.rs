@@ -299,7 +299,8 @@ impl Executor {
                 BrushCommand::Simple(s) => s,
                 _ => unreachable!(),
             };
-            let (name, args, redirects) = self.extract_simple_command(simple, local_vars)?;
+            let (name, args, redirects, stderr_behavior) =
+                self.extract_simple_command(simple, local_vars)?;
 
             let mut process = Command::new(&name);
             process.args(&args);
@@ -314,8 +315,21 @@ impl Executor {
             if i < last_idx {
                 let (reader, writer) =
                     os_pipe::pipe().map_err(|e| format!("failed to create pipe: {}", e))?;
+                // Compute stderr Stdio before stdout consumes the writer
+                let stderr_stdio = match stderr_behavior {
+                    StderrBehavior::DevNull => Stdio::null(),
+                    StderrBehavior::MergeToStdout => {
+                        // 2>&1: clone the pipe writer so stderr goes to the same pipe
+                        Stdio::from(
+                            writer
+                                .try_clone()
+                                .map_err(|e| format!("failed to clone pipe: {}", e))?,
+                        )
+                    }
+                    StderrBehavior::Capture => Stdio::piped(),
+                };
                 process.stdout(writer);
-                process.stderr(Stdio::piped());
+                process.stderr(stderr_stdio);
                 let child = process
                     .spawn()
                     .map_err(|e| format!("failed to spawn '{}': {}", name, e))?;
@@ -400,7 +414,8 @@ impl Executor {
         local_vars: &mut HashMap<String, String>,
         stdin_data: Option<String>,
     ) -> Result<(String, String, i32), String> {
-        let (name, args, redirects) = self.extract_simple_command(cmd, local_vars)?;
+        let (name, args, redirects, _stderr_behavior) =
+            self.extract_simple_command(cmd, local_vars)?;
 
         let mut process = Command::new(&name);
         process.args(&args);
@@ -439,12 +454,12 @@ impl Executor {
         Ok((stdout, stderr, exit_code))
     }
 
-    /// Extract command name, expanded args, and redirects from a SimpleCommand.
+    /// Extract command name, expanded args, redirects, and stderr behavior from a SimpleCommand.
     fn extract_simple_command(
         &self,
         cmd: &SimpleCommand,
         local_vars: &HashMap<String, String>,
-    ) -> Result<(String, Vec<String>, Vec<RedirectInfo>), String> {
+    ) -> Result<(String, Vec<String>, Vec<RedirectInfo>, StderrBehavior), String> {
         let name = match &cmd.word_or_name {
             Some(w) => self.expand_word_to_string(w, local_vars)?,
             None => return Err("empty command".to_string()),
@@ -452,6 +467,7 @@ impl Executor {
 
         let mut args = Vec::new();
         let mut redirects = Vec::new();
+        let mut stderr_behavior = StderrBehavior::Capture;
 
         // Process prefix and suffix items
         let prefix_items = cmd.prefix.iter().flat_map(|p| &p.0);
@@ -466,13 +482,63 @@ impl Executor {
                     args.extend(expanded);
                 }
                 CommandPrefixOrSuffixItem::IoRedirect(r) => {
+                    // Detect stderr behavior from the redirect
+                    let behavior = Self::detect_stderr_behavior(r);
+                    if behavior != StderrBehavior::Capture {
+                        stderr_behavior = behavior;
+                    }
                     redirects.extend(self.extract_redirect(r, local_vars)?);
                 }
                 _ => {}
             }
         }
 
-        Ok((name, args, redirects))
+        Ok((name, args, redirects, stderr_behavior))
+    }
+
+    /// Detect stderr behavior from an IoRedirect AST node.
+    fn detect_stderr_behavior(redirect: &IoRedirect) -> StderrBehavior {
+        match redirect {
+            IoRedirect::File(fd, kind, target) => {
+                // Only look at fd 2 redirects
+                if *fd != Some(2) {
+                    return StderrBehavior::Capture;
+                }
+                match kind {
+                    IoFileRedirectKind::DuplicateOutput => {
+                        // 2>&1
+                        match target {
+                            IoFileRedirectTarget::Fd(1) => StderrBehavior::MergeToStdout,
+                            IoFileRedirectTarget::Duplicate(w) if w.value == "1" => {
+                                StderrBehavior::MergeToStdout
+                            }
+                            _ => StderrBehavior::Capture,
+                        }
+                    }
+                    IoFileRedirectKind::Write
+                    | IoFileRedirectKind::Append
+                    | IoFileRedirectKind::Clobber => {
+                        // 2>/dev/null
+                        if let IoFileRedirectTarget::Filename(w) = target {
+                            if w.value == "/dev/null" {
+                                return StderrBehavior::DevNull;
+                            }
+                        }
+                        StderrBehavior::Capture
+                    }
+                    _ => StderrBehavior::Capture,
+                }
+            }
+            IoRedirect::OutputAndError(target, _) => {
+                // &>/dev/null
+                if target.value == "/dev/null" {
+                    StderrBehavior::DevNull
+                } else {
+                    StderrBehavior::Capture
+                }
+            }
+            _ => StderrBehavior::Capture,
+        }
     }
 
     fn execute_compound_command(
@@ -1054,6 +1120,17 @@ struct RedirectInfo {
 enum RedirectKindSimple {
     Overwrite,
     Append,
+}
+
+/// What to do with stderr for a command.
+#[derive(Debug, Clone, PartialEq)]
+enum StderrBehavior {
+    /// Default: capture stderr via piped()
+    Capture,
+    /// 2>/dev/null or &>/dev/null: discard stderr
+    DevNull,
+    /// 2>&1: merge stderr into stdout
+    MergeToStdout,
 }
 
 /// Check if parsed word pieces contain unquoted glob characters.
