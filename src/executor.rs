@@ -520,6 +520,15 @@ impl Executor {
             Vec::new()
         };
 
+        let max_iterations = 10_000; // Safety limit (matches while/until loops)
+        if values.len() > max_iterations {
+            return Err(format!(
+                "for loop has {} iterations, exceeding maximum ({})",
+                values.len(),
+                max_iterations
+            ));
+        }
+
         for value in values {
             local_vars.insert(fc.variable_name.clone(), value);
             let (stdout, stderr, code) = self.execute_compound_list(&fc.body.list, local_vars)?;
@@ -831,12 +840,10 @@ impl Executor {
     ) -> Result<String, String> {
         match param {
             Parameter::Named(name) => {
-                // Check local vars first (for-loop variables), then environment
-                if let Some(val) = local_vars.get(name.as_str()) {
-                    Ok(val.clone())
-                } else {
-                    Ok(std::env::var(name).unwrap_or_default())
-                }
+                // Only resolve from local vars (for-loop variables).
+                // Never fall back to environment — the validator only approves
+                // for-loop variables, and those are always in local_vars.
+                Ok(local_vars.get(name.as_str()).cloned().unwrap_or_default())
             }
             Parameter::Special(sp) => match sp {
                 word::SpecialParameter::LastExitStatus => Ok("0".to_string()),
@@ -846,11 +853,7 @@ impl Executor {
             Parameter::Positional(_) => Ok(String::new()),
             Parameter::NamedWithIndex { name, .. }
             | Parameter::NamedWithAllIndices { name, .. } => {
-                if let Some(val) = local_vars.get(name.as_str()) {
-                    Ok(val.clone())
-                } else {
-                    Ok(std::env::var(name).unwrap_or_default())
-                }
+                Ok(local_vars.get(name.as_str()).cloned().unwrap_or_default())
             }
         }
     }

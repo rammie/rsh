@@ -236,9 +236,14 @@ impl<'a> ValidatorContext<'a> {
                         self.check_arg_path(&w.value)?;
                     }
                 }
-                // The loop variable is safe — it's locally bound
+                // Approve the loop variable only within the body scope
+                let had_var = self.approved_vars.contains(&fc.variable_name);
                 self.approved_vars.insert(fc.variable_name.clone());
-                self.validate_compound_list(&fc.body.list)
+                let result = self.validate_compound_list(&fc.body.list);
+                if !had_var {
+                    self.approved_vars.remove(&fc.variable_name);
+                }
+                result
             }
             CompoundCommand::WhileClause(wc) => {
                 self.validate_compound_list(&wc.0)?;
@@ -358,8 +363,21 @@ impl<'a> ValidatorContext<'a> {
         let param = match expr {
             ParameterExpr::Parameter { parameter, .. }
             | ParameterExpr::ParameterLength { parameter, .. }
-            | ParameterExpr::Substring { parameter, .. }
             | ParameterExpr::Transform { parameter, .. } => parameter,
+            ParameterExpr::Substring {
+                parameter,
+                offset,
+                length,
+                ..
+            } => {
+                // Validate offset/length arithmetic expressions — they can contain
+                // command substitutions like $(malicious_command).
+                self.validate_word_str(&offset.value)?;
+                if let Some(len) = length {
+                    self.validate_word_str(&len.value)?;
+                }
+                parameter
+            }
             ParameterExpr::UseDefaultValues {
                 parameter,
                 default_value,
@@ -368,13 +386,10 @@ impl<'a> ValidatorContext<'a> {
                 validate_opt(default_value)?;
                 parameter
             }
-            ParameterExpr::AssignDefaultValues {
-                parameter,
-                default_value,
-                ..
-            } => {
-                validate_opt(default_value)?;
-                parameter
+            ParameterExpr::AssignDefaultValues { .. } => {
+                return Err(
+                    "variable assignment via ${var:=default} is not allowed".to_string(),
+                );
             }
             ParameterExpr::IndicateErrorIfNullOrUnset {
                 parameter,
@@ -544,6 +559,7 @@ impl<'a> ValidatorContext<'a> {
                 match target {
                     IoFileRedirectTarget::Filename(w) => {
                         self.validate_word(w)?;
+                        self.check_arg_path(&w.value)?;
                     }
                     IoFileRedirectTarget::ProcessSubstitution(_, _) => {
                         return Err("process substitution is not allowed".to_string());
@@ -573,6 +589,7 @@ impl<'a> ValidatorContext<'a> {
                     );
                 }
                 self.validate_word(target)?;
+                self.check_arg_path(&target.value)?;
             }
         }
         Ok(())
@@ -642,21 +659,36 @@ impl<'a> ValidatorContext<'a> {
 }
 
 /// Check an argument string for absolute paths and path traversal.
-/// Skips flags (args starting with `-`).
+/// For flags (args starting with `-`), checks the value portion after `=` if present.
 pub fn check_arg_path_safety(arg: &str) -> Result<(), String> {
     if arg.starts_with('-') {
+        // Check flag values like --file=/etc/passwd or --from-file=../../secret.
+        // Note: the caller (check_arg_path) strip_quotes the outer arg, but that
+        // won't match asymmetric cases like --file="/etc/passwd", so we also
+        // strip_quotes on the value portion here.
+        if let Some(eq_pos) = arg.find('=') {
+            let value = &arg[eq_pos + 1..];
+            if !value.is_empty() {
+                return check_path_value(strip_quotes(value));
+            }
+        }
         return Ok(());
     }
-    if arg.starts_with('/') {
+    check_path_value(arg)
+}
+
+/// Check a path string for absolute paths and path traversal.
+fn check_path_value(value: &str) -> Result<(), String> {
+    if value.starts_with('/') {
         return Err(format!(
             "absolute path '{}' in argument not allowed",
-            arg
+            value
         ));
     }
-    if arg.split('/').any(|seg| seg == "..") {
+    if value.split('/').any(|seg| seg == "..") {
         return Err(format!(
             "path traversal ('..') in argument '{}' not allowed",
-            arg
+            value
         ));
     }
     Ok(())
