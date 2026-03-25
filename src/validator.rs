@@ -559,24 +559,29 @@ impl<'a> ValidatorContext<'a> {
     /// Check a regular command argument for absolute paths and path traversal.
     /// Operates on raw Word.value strings (may include quotes).
     fn check_arg_path(&self, arg: &str) -> Result<(), String> {
-        let stripped = strip_quotes(arg);
-        if stripped.starts_with('-') {
-            return Ok(());
-        }
-        if stripped.starts_with('/') {
-            return Err(format!(
-                "absolute path '{}' in argument not allowed",
-                stripped
-            ));
-        }
-        if stripped.split('/').any(|seg| seg == "..") {
-            return Err(format!(
-                "path traversal ('..') in argument '{}' not allowed",
-                stripped
-            ));
-        }
-        Ok(())
+        check_arg_path_safety(strip_quotes(arg))
     }
+}
+
+/// Check an argument string for absolute paths and path traversal.
+/// Skips flags (args starting with `-`).
+pub fn check_arg_path_safety(arg: &str) -> Result<(), String> {
+    if arg.starts_with('-') {
+        return Ok(());
+    }
+    if arg.starts_with('/') {
+        return Err(format!(
+            "absolute path '{}' in argument not allowed",
+            arg
+        ));
+    }
+    if arg.split('/').any(|seg| seg == "..") {
+        return Err(format!(
+            "path traversal ('..') in argument '{}' not allowed",
+            arg
+        ));
+    }
+    Ok(())
 }
 
 /// Strip surrounding quotes from a Word.value (brush-parser preserves them).

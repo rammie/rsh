@@ -891,24 +891,9 @@ impl Executor {
 
     // --- Path checking ---
 
-    /// Check expanded argument values for path traversal.
+    /// Check expanded argument values for absolute paths and path traversal.
     fn check_expanded_arg_path(&self, arg: &str) -> Result<(), String> {
-        if arg.starts_with('-') {
-            return Ok(());
-        }
-        if arg.starts_with('/') {
-            return Err(format!(
-                "absolute path '{}' in argument not allowed",
-                arg
-            ));
-        }
-        if arg.split('/').any(|seg| seg == "..") {
-            return Err(format!(
-                "path traversal ('..') in argument '{}' not allowed",
-                arg
-            ));
-        }
-        Ok(())
+        validator::check_arg_path_safety(arg)
     }
 
     // --- Redirects ---
