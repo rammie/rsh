@@ -751,13 +751,10 @@ impl Executor {
                     Ok(s.clone())
                 }
             }
-            WordPiece::TildePrefix(s) => {
-                if s.is_empty() || s == "~" {
-                    // Expand ~ to HOME
-                    Ok(std::env::var("HOME").unwrap_or_else(|_| "~".to_string()))
-                } else {
-                    Ok(s.clone())
-                }
+            WordPiece::TildePrefix(_) => {
+                // Tilde expansion is blocked by the validator (~ expands to an absolute path).
+                // Reject here too as defense-in-depth.
+                Err("tilde expansion (~) is not allowed".to_string())
             }
             WordPiece::ParameterExpansion(expr) => self.expand_parameter(expr, local_vars),
             WordPiece::CommandSubstitution(cmd_str) => {
@@ -898,6 +895,12 @@ impl Executor {
     fn check_expanded_arg_path(&self, arg: &str) -> Result<(), String> {
         if arg.starts_with('-') {
             return Ok(());
+        }
+        if arg.starts_with('/') {
+            return Err(format!(
+                "absolute path '{}' in argument not allowed",
+                arg
+            ));
         }
         if arg.split('/').any(|seg| seg == "..") {
             return Err(format!(

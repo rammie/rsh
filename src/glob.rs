@@ -49,10 +49,13 @@ pub fn expand_glob(pattern: &str, working_dir: &Path) -> Result<Vec<String>, Str
         match entry {
             Ok(path) => {
                 // Verify the path stays within working_dir
-                if let Ok(canon_path) = path.canonicalize() {
-                    if !canon_path.starts_with(&canon_working) {
-                        continue; // skip paths outside working_dir
+                match path.canonicalize() {
+                    Ok(canon_path) => {
+                        if !canon_path.starts_with(&canon_working) {
+                            continue; // skip paths outside working_dir
+                        }
                     }
+                    Err(_) => continue, // skip paths that can't be verified (broken symlinks, etc.)
                 }
                 // Convert back to relative path
                 let display_path = path

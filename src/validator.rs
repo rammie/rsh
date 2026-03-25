@@ -28,7 +28,10 @@ const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
 ];
 
 /// Flags blocked by prefix match (e.g., sort -o, sort -ofoo all blocked).
-const PREFIX_BLOCKED: &[(&str, &[&str])] = &[("sort", &["-o", "--output"])];
+const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
+    ("sort", &["-o", "--output"]),
+    ("sed", &["-i", "--in-place"]),
+];
 
 /// Configuration passed into the validator.
 pub struct ValidatorConfig {

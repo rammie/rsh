@@ -912,3 +912,123 @@ fn test_escape_find_fls_writes_file() {
         stderr
     );
 }
+
+// ============================================================
+// Post-expansion absolute path blocking
+// ============================================================
+
+#[test]
+fn test_escape_command_substitution_absolute_path_blocked() {
+    // ESCAPE: command substitution output could produce an absolute path.
+    // echo /etc/hosts outputs "/etc/hosts", which becomes an argument to cat.
+    // The executor must reject absolute paths in expanded arguments.
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("cat $(echo /etc/hosts)")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: command substitution absolute path bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed") || stderr.contains("absolute"),
+        "expected absolute path rejection, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_escape_realpath_substitution_blocked() {
+    // ESCAPE: realpath outputs absolute paths by design.
+    // $(realpath .) expands to an absolute path that must be rejected as an arg.
+    let output = rsh_bin()
+        .arg("--dir")
+        .arg(env!("CARGO_MANIFEST_DIR"))
+        .arg("cat $(realpath Cargo.toml)")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "ESCAPE: realpath substitution bypass succeeded. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("not allowed") || stderr.contains("absolute"),
+        "expected absolute path rejection, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sed_i_blocked_when_in_allowlist() {
+    // If sed is added to the allowlist, -i must still be blocked.
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("sed,echo")
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("echo hello | sed -i 's/h/H/'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "sed -i should be blocked even when sed is in allowlist"
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected '-i' blocked error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sed_i_bak_blocked_when_in_allowlist() {
+    // sed -i.bak should also be blocked (prefix match).
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("sed,echo")
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("echo hello | sed -i.bak 's/h/H/'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "sed -i.bak should be blocked even when sed is in allowlist"
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected '-i' blocked error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sed_in_place_blocked_when_in_allowlist() {
+    // sed --in-place should also be blocked.
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("sed,echo")
+        .arg("--dir")
+        .arg("/tmp")
+        .arg("echo hello | sed --in-place 's/h/H/'")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "sed --in-place should be blocked even when sed is in allowlist"
+    );
+    assert!(
+        stderr.contains("not allowed"),
+        "expected '--in-place' blocked error, got: {}",
+        stderr
+    );
+}
