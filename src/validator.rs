@@ -15,6 +15,35 @@ use brush_parser::ParserOptions;
 
 use crate::allowlist::Allowlist;
 
+/// Commands that are always blocked, even if added to the allowlist via --allow.
+/// These commands have built-in capabilities that bypass rsh's security model.
+const ALWAYS_BLOCKED: &[(&str, &str)] = &[
+    (
+        "awk",
+        "awk can execute arbitrary commands via system() and write files",
+    ),
+    (
+        "gawk",
+        "gawk can execute arbitrary commands via system() and write files",
+    ),
+    (
+        "mawk",
+        "mawk can execute arbitrary commands via system() and write files",
+    ),
+    (
+        "nawk",
+        "nawk can execute arbitrary commands via system() and write files",
+    ),
+    (
+        "sed",
+        "sed can execute arbitrary commands (GNU sed 'e') and read/write arbitrary files (r/w commands)",
+    ),
+    (
+        "gsed",
+        "gsed can execute arbitrary commands ('e') and read/write arbitrary files (r/w commands)",
+    ),
+];
+
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
     (
@@ -28,10 +57,7 @@ const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
 ];
 
 /// Flags blocked by prefix match (e.g., sort -o, sort -ofoo all blocked).
-const PREFIX_BLOCKED: &[(&str, &[&str])] = &[
-    ("sort", &["-o", "--output"]),
-    ("sed", &["-i", "--in-place"]),
-];
+const PREFIX_BLOCKED: &[(&str, &[&str])] = &[("sort", &["-o", "--output"])];
 
 /// Configuration passed into the validator.
 pub struct ValidatorConfig {
@@ -162,6 +188,14 @@ impl<'a> ValidatorContext<'a> {
                 return Err("empty command".to_string());
             }
         };
+
+        // Hard-block dangerous commands even if added to the allowlist
+        if let Some((_, reason)) = ALWAYS_BLOCKED.iter().find(|(c, _)| *c == cmd_name) {
+            return Err(format!(
+                "command '{}' is blocked even with --allow: {}",
+                cmd_name, reason
+            ));
+        }
 
         // Check allowlist
         if !self.allowlist.is_allowed(&cmd_name) {
@@ -343,11 +377,15 @@ impl<'a> ValidatorContext<'a> {
             WordPiece::TildePrefix(_) => Err(
                 "tilde expansion (~) is not allowed (~ expands to an absolute path)".to_string(),
             ),
+            WordPiece::ArithmeticExpression(expr) => {
+                // Arithmetic expressions can contain command substitutions
+                // like $(($(malicious_command))). Validate the inner expression.
+                self.validate_word_str(&expr.value)
+            }
             WordPiece::Text(_)
             | WordPiece::SingleQuotedText(_)
             | WordPiece::AnsiCQuotedText(_)
-            | WordPiece::EscapeSequence(_)
-            | WordPiece::ArithmeticExpression(_) => Ok(()),
+            | WordPiece::EscapeSequence(_) => Ok(()),
         }
     }
 

@@ -116,7 +116,7 @@ grep, rg, ugrep, find, fd, cat, bat, head, tail, less, ls, eza, stat, file, du, 
 sort, uniq, cut, tr, diff, comm, basename, dirname, realpath, echo, date, true, false, test
 ```
 
-Note: Dangerous flags are blocked — `find -delete`/`-exec`/`-execdir`/`-fprint`/etc., `fd -x`/`--exec`/`-X`/`--exec-batch`, `sort -o`/`--output`. `awk`, `sed`, and `xargs` are intentionally excluded — `awk`'s `system()` can execute arbitrary commands, and `sed`/`xargs` can write files or run sub-commands.
+Note: Dangerous flags are blocked — `find -delete`/`-exec`/`-execdir`/`-fprint`/etc., `fd -x`/`--exec`/`-X`/`--exec-batch`, `sort -o`/`--output`. `awk` and `sed` are **always blocked, even if added via `--allow`** — `awk`'s `system()` can execute arbitrary commands, and `sed` can execute commands (GNU sed `e`), read arbitrary files (`r`/`R`), and write arbitrary files (`w`/`W`) via built-in commands that bypass rsh's path restrictions. `xargs` is intentionally excluded from the default allowlist as it can run sub-commands.
 
 Override with `--allow`, the `RSH_ALLOWLIST` environment variable, or a `~/.rsh/allowlist` config file (one command per line).
 
@@ -132,6 +132,7 @@ rsh is **defense in depth** — multiple independent layers, each sufficient to 
 | **Redirect gating** | File writes disabled by default; path traversal guard when enabled |
 | **AST validation** | Function definitions, background `&`, process substitution, here-docs |
 | **Variable rejection** | All env var references blocked in arguments (blocks `$SECRET`, `$HOME`, etc.) |
+| **Hard-blocked commands** | `awk`, `sed` — always rejected, even with `--allow` (can execute arbitrary commands) |
 | **Blocked flags** | `find -delete`/`-exec`, `fd --exec`, `sort -o` — dangerous flags on allowed commands |
 | **Environment sanitization** | Only approved variables forwarded to child processes |
 | **Signal handling** | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |

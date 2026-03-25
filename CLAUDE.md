@@ -23,7 +23,7 @@ The pipeline is: **parse → validate → execute**. All validation happens befo
 
 - **`main.rs`** — CLI argument parsing, wires together allowlist → parser → executor
 - **`allowlist.rs`** — Manages the command allowlist (built-in defaults, `~/.rsh/allowlist` config file, `RSH_ALLOWLIST` env var, `--allow` CLI flag; last wins). Defines `FORWARDED_VARS` (env vars passed to child processes; not available in command arguments).
-- **`validator.rs`** — Recursive AST security walker. Walks every node in a `brush_parser::ast::Program` and enforces: command allowlist, blocked flags (find -delete, sed -i), variable reference approval, redirect gating, path traversal checks, rejection of function defs/background/process substitution, and sub-command validation (find -exec, xargs).
+- **`validator.rs`** — Recursive AST security walker. Walks every node in a `brush_parser::ast::Program` and enforces: command allowlist, hard-blocked commands (awk, sed), blocked flags (find -delete), variable reference approval, redirect gating, path traversal checks, rejection of function defs/background/process substitution, and sub-command validation (find -exec, xargs).
 - **`executor.rs`** — Walks the validated AST, expands words (variables, globs, command substitution), wires pipes between pipeline stages, handles loops/conditionals, spawns processes with sanitized environment. Manages signal handling (SIGINT/SIGTERM) and output truncation.
 - **`glob.rs`** — Glob expansion scoped to working directory with path traversal and absolute path guards.
 
@@ -40,7 +40,7 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Uses `brush-parser` crate for full bash syntax parsing — no hand-rolled parser
 - Validator and executor are separate passes: validator returns `Result<Vec<String>, String>`, executor only runs after validation succeeds
 - Output behaves like bash (stdout/stderr/exit code), not JSON
-- `sed -i` blocked via prefix matching (catches `-i`, `-i.bak`, `-ibak`); `awk` excluded entirely (its `system()` can execute arbitrary commands)
+- `awk` and `sed` are hard-blocked (rejected even with `--allow`) — `awk`'s `system()` and `sed`'s `e`/`r`/`w` commands can bypass rsh's security model
 - Loop iterations capped at 10,000
 - Environment sanitized by default (only `FORWARDED_VARS` like PATH, LANG forwarded to children; no env vars allowed in arguments)
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)

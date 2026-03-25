@@ -44,7 +44,7 @@ IMPORTANT — use relative paths only:
 - To explore from the working directory: ls ., find . -name '*.ts', tree .
 
 Not allowed:
-- awk, sed, xargs (use cut, grep, command substitution, and for-loops instead)
+- awk, sed, xargs — always blocked, even with --allow (use cut, grep, command substitution, and for-loops instead)
 - find -exec / -execdir (use command substitution or for-loops instead)
 - Instead of: find . | xargs grep pattern → use: grep -r pattern . OR grep pattern $(find . -name '*.ext')
 - Commands outside the allowlist above

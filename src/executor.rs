@@ -69,6 +69,9 @@ impl Output {
     }
 }
 
+/// Maximum iterations for any loop (for, while, until).
+const MAX_LOOP_ITERATIONS: usize = 10_000;
+
 pub struct Executor {
     allowlist: Allowlist,
     working_dir: std::path::PathBuf,
@@ -178,6 +181,7 @@ impl Executor {
             all_stdout.push_str(&stdout);
             all_stderr.push_str(&stderr);
             last_exit_code = code;
+            local_vars.insert("?".to_string(), code.to_string());
         }
 
         Ok((all_stdout, all_stderr, last_exit_code))
@@ -194,6 +198,7 @@ impl Executor {
         let (stdout, stderr, mut last_code) = self.execute_pipeline(&and_or.first, local_vars)?;
         all_stdout.push_str(&stdout);
         all_stderr.push_str(&stderr);
+        local_vars.insert("?".to_string(), last_code.to_string());
 
         for additional in &and_or.additional {
             match additional {
@@ -203,6 +208,7 @@ impl Executor {
                         all_stdout.push_str(&stdout);
                         all_stderr.push_str(&stderr);
                         last_code = code;
+                        local_vars.insert("?".to_string(), last_code.to_string());
                     }
                 }
                 AndOr::Or(pipeline) => {
@@ -211,6 +217,7 @@ impl Executor {
                         all_stdout.push_str(&stdout);
                         all_stderr.push_str(&stderr);
                         last_code = code;
+                        local_vars.insert("?".to_string(), last_code.to_string());
                     }
                 }
             }
@@ -520,12 +527,11 @@ impl Executor {
             Vec::new()
         };
 
-        let max_iterations = 10_000; // Safety limit (matches while/until loops)
-        if values.len() > max_iterations {
+        if values.len() > MAX_LOOP_ITERATIONS {
             return Err(format!(
                 "for loop has {} iterations, exceeding maximum ({})",
                 values.len(),
-                max_iterations
+                MAX_LOOP_ITERATIONS
             ));
         }
 
@@ -550,12 +556,14 @@ impl Executor {
         let mut all_stdout = String::new();
         let mut all_stderr = String::new();
         let mut last_code = 0;
-        let max_iterations = 10_000; // Safety limit
         let mut iterations = 0;
 
         loop {
-            if iterations >= max_iterations {
-                return Err("loop exceeded maximum iterations (10000)".to_string());
+            if iterations >= MAX_LOOP_ITERATIONS {
+                return Err(format!(
+                    "loop exceeded maximum iterations ({})",
+                    MAX_LOOP_ITERATIONS
+                ));
             }
             iterations += 1;
 
@@ -846,7 +854,9 @@ impl Executor {
                 Ok(local_vars.get(name.as_str()).cloned().unwrap_or_default())
             }
             Parameter::Special(sp) => match sp {
-                word::SpecialParameter::LastExitStatus => Ok("0".to_string()),
+                word::SpecialParameter::LastExitStatus => {
+                    Ok(local_vars.get("?").cloned().unwrap_or_else(|| "0".to_string()))
+                }
                 word::SpecialParameter::ProcessId => Ok(std::process::id().to_string()),
                 _ => Ok(String::new()),
             },

