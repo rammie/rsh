@@ -676,6 +676,14 @@ pub fn check_blocked_flags(cmd: &str, args: &[&str]) -> Result<(), String> {
             if blocked_flags.contains(arg) {
                 return Err(format!("'{}' flag on '{}' is not allowed", arg, cmd));
             }
+            // Catch blocked single-letter flags hidden in combined clusters:
+            // e.g., `fd -Hx` is parsed by fd as `-H -x`, bypassing exact match on `-x`.
+            if let Some(matched) = find_blocked_short_flag_in_cluster(arg, blocked_flags) {
+                return Err(format!(
+                    "'{}' flag on '{}' is not allowed (found in combined flags '{}')",
+                    matched, cmd, arg
+                ));
+            }
         }
     }
     if let Some((_, blocked_prefixes)) = PREFIX_BLOCKED.iter().find(|(c, _)| *c == cmd) {
@@ -688,9 +696,46 @@ pub fn check_blocked_flags(cmd: &str, args: &[&str]) -> Result<(), String> {
                     ));
                 }
             }
+            // Catch blocked single-letter prefix flags in combined clusters:
+            // e.g., `sort -ro file` is parsed by sort as `-r -o file`, bypassing
+            // the prefix check on `-o`.
+            if let Some(matched) = find_blocked_short_flag_in_cluster(arg, blocked_prefixes) {
+                return Err(format!(
+                    "'{}' flag on '{}' is not allowed (writes files in place; found in combined flags '{}')",
+                    matched, cmd, arg
+                ));
+            }
         }
     }
     Ok(())
+}
+
+/// Check if a combined short-flag cluster (e.g., `-Hx`, `-nro`) contains
+/// any single-letter blocked flag (e.g., `-x` or `-o`).
+///
+/// Only examines args that look like pure flag clusters: start with `-` (not `--`),
+/// at least 3 characters, and all characters after the dash are ASCII alphabetic.
+/// This avoids false positives on flags with embedded values like `-t:` or `-n3`.
+fn find_blocked_short_flag_in_cluster<'a>(arg: &str, blocked: &[&'a str]) -> Option<&'a str> {
+    // Must be a short-flag group: starts with -, not --, at least 2 flag letters
+    if !arg.starts_with('-') || arg.starts_with("--") || arg.len() < 3 {
+        return None;
+    }
+    let after_dash = &arg[1..];
+    // A pure flag cluster is all ASCII alphabetic (no embedded values like -n3 or -f/path)
+    if !after_dash.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    for flag in blocked {
+        // Only match single-letter short flags: exactly "-X" (2 chars, one dash + one letter)
+        if flag.len() == 2 && flag.starts_with('-') {
+            let blocked_char = flag.as_bytes()[1];
+            if after_dash.as_bytes().contains(&blocked_char) {
+                return Some(flag);
+            }
+        }
+    }
+    None
 }
 
 /// Convenience wrapper for `check_blocked_flags` when args are `&[String]`.

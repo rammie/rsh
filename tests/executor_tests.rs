@@ -2067,6 +2067,166 @@ fn test_interpreters_not_in_allowlist() {
     assert_not_in_allowlist("perl -e 'print 1'");
 }
 
+// --- Combined short-flag cluster bypass tests ---
+
+#[test]
+fn test_fd_exec_blocked_via_combined_flags() {
+    // fd -Hx is parsed by fd as -H -x, which is the blocked -x/--exec flag.
+    // Must be caught even though the arg "-Hx" doesn't exactly equal "-x".
+    let output = rsh_bin()
+        .arg("fd -Hx echo {} .")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-x"),
+        "expected '-x' blocked in combined flags for 'fd -Hx', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_fd_exec_batch_blocked_via_combined_flags() {
+    // fd -HX is parsed by fd as -H -X (--exec-batch), must be caught.
+    let output = rsh_bin()
+        .arg("fd -HX echo {} .")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-X"),
+        "expected '-X' blocked in combined flags for 'fd -HX', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_fd_exec_blocked_via_three_combined_flags() {
+    // fd -HIx: three combined flags, -x is the blocked one
+    let output = rsh_bin()
+        .arg("fd -HIx echo {} .")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-x"),
+        "expected '-x' blocked in combined flags for 'fd -HIx', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sort_output_blocked_via_combined_flags() {
+    // sort -ro is parsed by sort as -r -o, which is the blocked -o/--output flag.
+    let output = rsh_bin()
+        .arg("sort -ro output.txt input.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-o"),
+        "expected '-o' blocked in combined flags for 'sort -ro', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sort_output_blocked_via_three_combined_flags() {
+    // sort -nro: three flags combined, -o is the blocked one
+    let output = rsh_bin()
+        .arg("sort -nro output.txt input.txt")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-o"),
+        "expected '-o' blocked in combined flags for 'sort -nro', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_fd_exec_blocked_at_start_of_combined_flags() {
+    // fd -xH: blocked flag -x appears at the START of the cluster, not the end
+    let output = rsh_bin()
+        .arg("fd -xH echo {} .")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not allowed") && stderr.contains("-x"),
+        "expected '-x' blocked at start of combined flags for 'fd -xH', got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_fd_standalone_flags_still_allowed() {
+    // fd -H (hidden) without -x should still be allowed
+    let output = rsh_bin()
+        .arg("fd -H . .")
+        .output()
+        .unwrap();
+    // May fail for other reasons (fd not installed, etc.) but should NOT fail
+    // with "not allowed" for blocked flags
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("-x") || !stderr.contains("not allowed"),
+        "fd -H should not be blocked, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sort_non_blocked_combined_flags_allowed() {
+    // sort -rn should still work — neither r nor n is a blocked flag
+    let output = rsh_bin()
+        .arg("echo -e '3\n1\n2' | sort -rn")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "sort -rn should be allowed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_combined_flag_check_skips_long_flags() {
+    // --sort should not trigger the combined-flag check (it's a long flag, not a cluster)
+    let output = rsh_bin()
+        .arg("ls --sort=size .")
+        .output()
+        .unwrap();
+    // ls --sort=size is fine, it's a legitimate long flag
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("writes files in place"),
+        "long flag --sort should not trigger combined flag check, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_combined_flag_check_skips_flags_with_values() {
+    // sort -t: should not trigger the combined flag check (has non-alpha char ':')
+    let output = rsh_bin()
+        .arg("echo 'a:b:c' | sort -t:")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "sort -t: should not be blocked, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 // --- Defense-in-depth: expanded command name re-validation ---
 
 #[test]
