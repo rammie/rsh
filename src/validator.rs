@@ -5,7 +5,6 @@
 /// - Blocked flags (-delete, -ok, -okdir, -exec, -execdir on find; -x/--exec on fd)
 /// - Variable reference approval
 /// - Redirect gating (--allow-redirects)
-/// - Path traversal / absolute path checks
 /// - Rejection of function definitions, background (&), and process substitution
 use std::collections::HashSet;
 
@@ -248,11 +247,6 @@ impl<'a> ValidatorContext<'a> {
         // Check blocked flags (exact match and prefix match)
         self.check_blocked_flags(&cmd_name, &string_args)?;
 
-        // Check argument paths for absolute paths and path traversal
-        for arg in &string_args {
-            self.check_arg_path(arg)?;
-        }
-
         // Validate redirects
         if !redirects.is_empty() {
             self.validate_redirects(&redirects, pipeline_idx, pipeline_len, &cmd_name)?;
@@ -280,10 +274,6 @@ impl<'a> ValidatorContext<'a> {
                 if let Some(values) = &fc.values {
                     for w in values {
                         self.validate_word(w)?;
-                        // Check iteration values for absolute paths and path traversal —
-                        // otherwise an attacker can set a loop variable to an absolute path
-                        // and use it in command arguments to bypass path restrictions.
-                        self.check_arg_path(&w.value)?;
                     }
                 }
                 // Approve the loop variable only within the body scope
@@ -613,7 +603,6 @@ impl<'a> ValidatorContext<'a> {
                 match target {
                     IoFileRedirectTarget::Filename(w) => {
                         self.validate_word(w)?;
-                        self.check_arg_path(&w.value)?;
                     }
                     IoFileRedirectTarget::ProcessSubstitution(_, _) => {
                         return Err("process substitution is not allowed".to_string());
@@ -643,7 +632,6 @@ impl<'a> ValidatorContext<'a> {
                     );
                 }
                 self.validate_word(target)?;
-                self.check_arg_path(&target.value)?;
             }
         }
         Ok(())
@@ -684,12 +672,6 @@ impl<'a> ValidatorContext<'a> {
     /// Check args against UNCONDITIONALLY_BLOCKED and PREFIX_BLOCKED for a command.
     fn check_blocked_flags(&self, cmd: &str, args: &[&str]) -> Result<(), String> {
         check_blocked_flags(cmd, args)
-    }
-
-    /// Check a regular command argument for absolute paths and path traversal.
-    /// Operates on raw Word.value strings (may include quotes).
-    fn check_arg_path(&self, arg: &str) -> Result<(), String> {
-        check_arg_path_safety(strip_quotes(arg))
     }
 }
 

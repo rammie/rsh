@@ -858,7 +858,7 @@ fn test_redirect_to_real_file_still_blocked_without_flag() {
 
 #[test]
 fn test_escape_for_loop_absolute_path_bypass() {
-    // For-loop values with absolute paths are blocked by the validator's check_arg_path.
+    // For-loop values with absolute paths are blocked by the executor's check_expanded_arg_path.
     let output = rsh_bin()
         .arg("for x in /etc; do cat $x/hosts; done")
         .output()
@@ -1544,11 +1544,11 @@ fn test_no_env_leak_through_for_loop_var_name() {
     );
 }
 
-// --- Fix #1: Validator path-checks redirect targets ---
+// --- Redirect path safety (checked post-expansion by executor) ---
 
 #[test]
-fn test_redirect_absolute_path_rejected_by_validator() {
-    // Validator should catch absolute paths in redirect targets, not just the executor
+fn test_redirect_absolute_path_rejected() {
+    // Executor catches absolute paths in expanded redirect targets
     let output = rsh_bin()
         .arg("--allow-redirects")
         .arg("echo hello > /tmp/evil")
@@ -1564,8 +1564,8 @@ fn test_redirect_absolute_path_rejected_by_validator() {
 }
 
 #[test]
-fn test_redirect_path_traversal_rejected_by_validator() {
-    // Validator should catch .. traversal in redirect targets
+fn test_redirect_path_traversal_rejected() {
+    // Executor catches .. traversal in expanded redirect targets
     let output = rsh_bin()
         .arg("--allow-redirects")
         .arg("echo hello > ../../../etc/shadow")
@@ -1616,7 +1616,7 @@ fn test_output_and_error_redirect_traversal_blocked() {
 
 #[test]
 fn test_substring_offset_command_substitution_blocked() {
-    // ${x:$(dangerous):1} — command substitution in substring offset must be validated
+    // ${x:$(dangerous):1} — substring expansion is unsupported; executor rejects it
     let output = rsh_bin()
         .arg("for x in hello; do echo ${x:$(cat /etc/passwd):1}; done")
         .output()
@@ -1624,7 +1624,9 @@ fn test_substring_offset_command_substitution_blocked() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("absolute path") || stderr.contains("not allowed"),
+        stderr.contains("unsupported parameter expansion")
+            || stderr.contains("absolute path")
+            || stderr.contains("not allowed"),
         "stderr was: {}",
         stderr
     );
@@ -1632,7 +1634,7 @@ fn test_substring_offset_command_substitution_blocked() {
 
 #[test]
 fn test_substring_length_command_substitution_blocked() {
-    // ${x:0:$(dangerous)} — command substitution in substring length must be validated
+    // ${x:0:$(dangerous)} — substring expansion is unsupported; executor rejects it
     let output = rsh_bin()
         .arg("for x in hello; do echo ${x:0:$(cat /etc/passwd)}; done")
         .output()
@@ -1640,7 +1642,9 @@ fn test_substring_length_command_substitution_blocked() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("absolute path") || stderr.contains("not allowed"),
+        stderr.contains("unsupported parameter expansion")
+            || stderr.contains("absolute path")
+            || stderr.contains("not allowed"),
         "stderr was: {}",
         stderr
     );

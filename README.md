@@ -124,20 +124,26 @@ Override with `--allow`, the `RSH_ALLOWLIST` environment variable, or a `~/.rsh/
 
 rsh is **defense in depth** — multiple independent layers, each sufficient to block common attacks:
 
-| Layer | What it blocks |
-|-------|---------------|
-| **Command allowlist** | Arbitrary binaries (`curl`, `rm`, `bash`, `python`) |
-| **Path rejection** | Path separators in command names (`/usr/bin/grep`, `./exploit`) |
-| **Argument traversal** | `..` path components, absolute paths, and tilde (`~`) in arguments |
-| **Redirect gating** | File writes disabled by default; path traversal guard when enabled |
-| **AST validation** | Function definitions, background `&`, process substitution, here-docs |
-| **Variable rejection** | All env var references blocked in arguments (blocks `$SECRET`, `$HOME`, etc.) |
-| **Hard-blocked commands** | `awk`, `sed` — always rejected, even with `--allow` (can execute arbitrary commands) |
-| **Blocked flags** | `find -delete`/`-exec`, `fd --exec`, `sort -o` — dangerous flags on allowed commands |
-| **Environment sanitization** | Only approved variables forwarded to child processes |
-| **Signal handling** | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |
-| **Output limits** | Truncation prevents memory exhaustion from large output |
-| **Loop limits** | While/until loops capped at 10,000 iterations |
+| Layer | Phase | What it blocks |
+|-------|-------|---------------|
+| **Command allowlist** | Validate + Execute | Arbitrary binaries (`curl`, `rm`, `bash`, `python`); re-checked post-expansion |
+| **Path rejection** | Validate | Path separators in command names (`/usr/bin/grep`, `./exploit`) |
+| **Argument path checks** | Execute | `..` path components, absolute paths, and tilde (`~`) in expanded arguments |
+| **Redirect gating** | Validate + Execute | File writes disabled by default; path checks on expanded targets when enabled |
+| **AST structural checks** | Validate | Function definitions, background `&`, process substitution, here-docs |
+| **Variable rejection** | Validate | All env var references blocked in arguments (blocks `$SECRET`, `$HOME`, etc.) |
+| **Hard-blocked commands** | Validate | `awk`, `sed` — always rejected, even with `--allow` (can execute arbitrary commands) |
+| **Blocked flags** | Validate + Execute | `find -delete`/`-exec`, `fd --exec`, `sort -o` — checked on literals and expanded args |
+| **Environment sanitization** | Execute | Only approved variables forwarded to child processes |
+| **Signal handling** | Execute | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |
+| **Output limits** | Execute | Truncation prevents memory exhaustion from large output |
+| **Loop limits** | Execute | While/until loops capped at 10,000 iterations |
+
+### Validator vs Executor
+
+The validator and executor have distinct security roles. The **validator** performs fast-fail structural checks on the raw AST — things knowable at parse time like disallowed commands, forbidden syntax, and unapproved variable references. The **executor** is the real security boundary for dynamic values — after expanding variables, globs, and command substitutions, it re-validates command names, checks expanded arguments for path traversal, re-checks blocked flags, and validates redirect targets.
+
+This split exists because bash is a dynamic language. Static analysis of the AST cannot predict what strings expansion will produce (variable substitution, command substitution, glob expansion, parameter expansion all happen at runtime). Rather than trying to statically analyze every bash string-construction mechanism, the validator handles structural concerns and the executor enforces value constraints on the actual expanded strings that get passed to processes.
 
 ### Trust boundaries
 
@@ -165,16 +171,19 @@ input string
  brush-parser  ──── parses full bash syntax into typed AST
      │
      ▼
-  Validator   ──── walks AST, checks allowlist + security policy
-     │              rejects with error on stderr
+  Validator   ──── structural checks: allowlist, blocked flags, forbidden
+     │              syntax, variable approval, redirect gating
+     │              (rejects with error on stderr)
      ▼
-  Executor    ──── runs validated AST: spawns processes, wires pipes,
-     │              handles loops/conditionals/substitution
+  Executor    ──── expands variables/globs/substitutions, then re-validates
+     │              expanded values: path checks, command re-validation,
+     │              blocked flag re-checks, redirect target validation
+     │              (spawns processes, wires pipes, handles loops/conditionals)
      ▼
  stdout/stderr/exit code
 ```
 
-The key principle: **parse everything, validate before executing.** brush-parser accepts all valid bash syntax. rsh's validator walks the AST and rejects anything outside the security policy. The executor then runs only validated programs.
+The key principle: **structural checks before execution, value checks after expansion.** The validator catches what's statically knowable from the AST. The executor expands dynamic values and enforces security constraints on the actual strings before passing them to processes.
 
 ## Development
 

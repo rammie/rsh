@@ -7,7 +7,7 @@ description = "Restricted shell for AI agents — safe, auditable command execut
 [dependencies]
 glob = "0.3"
 os_pipe = "1"
-brush-parser = "0.3"
+brush-parser = "=0.3.0"
 libc = "0.2"
 
 [profile.release]

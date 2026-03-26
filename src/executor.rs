@@ -910,9 +910,15 @@ impl Executor {
                     Ok(val)
                 }
             }
+            ParameterExpr::ParameterLength { parameter, .. } => {
+                let val = self.resolve_parameter(parameter, local_vars)?;
+                Ok(val.len().to_string())
+            }
             _ => {
-                // For other complex parameter operations, try basic resolution
-                Ok(String::new())
+                // Reject unimplemented parameter expansion forms rather than
+                // silently returning empty — they may contain unexecuted command
+                // substitutions or produce unexpected results.
+                Err("unsupported parameter expansion".to_string())
             }
         }
     }
@@ -985,6 +991,14 @@ impl Executor {
         validator::check_arg_path_safety(arg)
     }
 
+    /// Validate an expanded redirect target: skip /dev/null, reject bad paths.
+    fn validate_redirect_target(&self, target: &str) -> Result<(), String> {
+        if target != "/dev/null" {
+            self.check_expanded_arg_path(target)?;
+        }
+        Ok(())
+    }
+
     // --- Redirects ---
 
     fn extract_redirect(
@@ -1016,6 +1030,7 @@ impl Executor {
                     }
                     _ => return Ok(Vec::new()),
                 };
+                self.validate_redirect_target(&target_str)?;
                 Ok(vec![RedirectInfo {
                     kind: redir_kind,
                     target: target_str,
@@ -1024,6 +1039,7 @@ impl Executor {
             IoRedirect::OutputAndError(target, append) => {
                 // &> file or &>> file — redirect both stdout and stderr to file
                 let target_str = self.expand_word_to_string(target, local_vars)?;
+                self.validate_redirect_target(&target_str)?;
                 let kind = if *append {
                     RedirectKindSimple::Append
                 } else {
@@ -1054,20 +1070,15 @@ impl Executor {
 
     fn apply_redirects(&self, stdout: &str, redirects: &[RedirectInfo]) -> Result<String, String> {
         for redirect in redirects {
-            // /dev/null — just discard the output
+            // /dev/null — discard the output
             if redirect.target == "/dev/null" {
                 return Ok(String::new());
             }
 
-            if redirect.target.starts_with('/') {
-                return Err(format!(
-                    "absolute redirect path '{}' not allowed",
-                    redirect.target
-                ));
-            }
             let path = self.working_dir.join(&redirect.target);
 
-            // Path traversal guard
+            // Canonicalize-based path traversal guard (belt-and-suspenders
+            // beyond the string checks in extract_redirect)
             let canon_working = self
                 .working_dir
                 .canonicalize()
