@@ -73,6 +73,17 @@ impl Output {
 /// Maximum iterations for any loop (for, while, until).
 const MAX_LOOP_ITERATIONS: usize = 10_000;
 
+/// Environment variables stripped even in --inherit-env mode.
+/// These allow arbitrary code injection into child processes via dynamic linker.
+const DANGEROUS_ENV_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_LIBRARY_PATH",
+];
+
 /// Check if a command name is a builtin (executed in-process, not spawned).
 fn is_builtin(name: &str) -> bool {
     name == "sed"
@@ -84,6 +95,7 @@ pub struct Executor {
     allow_redirects: bool,
     max_output: usize,
     inherit_env: bool,
+    substitution_depth: std::cell::Cell<usize>,
 }
 
 impl Executor {
@@ -100,6 +112,7 @@ impl Executor {
             allow_redirects,
             max_output,
             inherit_env,
+            substitution_depth: std::cell::Cell::new(0),
         }
     }
 
@@ -906,8 +919,7 @@ impl Executor {
                 Ok(result)
             }
             WordPiece::ArithmeticExpression(_) => {
-                // Arithmetic expansion — not fully supported
-                Ok(String::new())
+                Err("arithmetic expansion $((...)) is not supported".to_string())
             }
         }
     }
@@ -991,6 +1003,15 @@ impl Executor {
         cmd_str: &str,
         local_vars: &HashMap<String, String>,
     ) -> Result<String, String> {
+        let depth = self.substitution_depth.get();
+        if depth >= allowlist::MAX_SUBSTITUTION_DEPTH {
+            return Err(format!(
+                "command substitution nested too deeply (max {})",
+                allowlist::MAX_SUBSTITUTION_DEPTH
+            ));
+        }
+        self.substitution_depth.set(depth + 1);
+
         // Parse the inner command
         let reader = std::io::Cursor::new(cmd_str);
         let mut parser = brush_parser::Parser::builder().reader(reader).build();
@@ -1000,7 +1021,11 @@ impl Executor {
 
         // Execute it
         let mut sub_vars = local_vars.clone();
-        let (stdout, _stderr, _code) = self.execute_program(&inner_program, &mut sub_vars)?;
+        let result = self.execute_program(&inner_program, &mut sub_vars);
+
+        self.substitution_depth.set(depth);
+
+        let (stdout, _stderr, _code) = result?;
 
         // Trim trailing newline (shell behavior)
         Ok(stdout.trim_end_matches('\n').to_string())
@@ -1015,6 +1040,12 @@ impl Executor {
                 if let Ok(val) = std::env::var(var) {
                     process.env(var, val);
                 }
+            }
+        } else {
+            // Even in --inherit-env mode, strip vars that allow arbitrary code
+            // injection via dynamic linker (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.)
+            for var in DANGEROUS_ENV_VARS {
+                process.env_remove(var);
             }
         }
     }

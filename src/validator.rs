@@ -12,7 +12,7 @@ use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
 use brush_parser::ParserOptions;
 
-use crate::allowlist::Allowlist;
+use crate::allowlist::{self, Allowlist};
 
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
@@ -47,6 +47,7 @@ pub fn validate(
         config,
         approved_vars,
         command_names: Vec::new(),
+        substitution_depth: 0,
     };
     ctx.validate_program(program)?;
     Ok(ctx.command_names)
@@ -57,6 +58,7 @@ struct ValidatorContext<'a> {
     config: &'a ValidatorConfig,
     approved_vars: HashSet<String>,
     command_names: Vec<String>,
+    substitution_depth: usize,
 }
 
 impl<'a> ValidatorContext<'a> {
@@ -467,6 +469,13 @@ impl<'a> ValidatorContext<'a> {
     }
 
     fn validate_command_substitution(&self, cmd_str: &str) -> Result<(), String> {
+        if self.substitution_depth >= allowlist::MAX_SUBSTITUTION_DEPTH {
+            return Err(format!(
+                "command substitution nested too deeply (max {})",
+                allowlist::MAX_SUBSTITUTION_DEPTH
+            ));
+        }
+
         // Parse the inner command
         let reader = std::io::Cursor::new(cmd_str);
         let mut parser = brush_parser::Parser::builder().reader(reader).build();
@@ -480,6 +489,7 @@ impl<'a> ValidatorContext<'a> {
             config: self.config,
             approved_vars: self.approved_vars.clone(),
             command_names: Vec::new(),
+            substitution_depth: self.substitution_depth + 1,
         };
         inner_ctx.validate_program(&inner_program)?;
         // We don't add inner command names to the outer list — they're nested

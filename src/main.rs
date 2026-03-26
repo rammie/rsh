@@ -88,7 +88,7 @@ Patterns for multi-step reads:
 - stdout, stderr, and exit codes work exactly like bash
 - Rejected commands print an error to stderr and exit 1
 - Environment is sanitized (PATH, LANG, etc. are forwarded to commands)
-- With --inherit-env, all parent environment variables are visible to commands (including printenv, env)
+- With --inherit-env, all parent environment variables are visible to commands (including printenv, env) — except LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, DYLD_INSERT_LIBRARIES, DYLD_FRAMEWORK_PATH, and DYLD_LIBRARY_PATH, which are always stripped for security
 - With --allow-redirects, output redirects follow symlinks in the working directory
 "
     );

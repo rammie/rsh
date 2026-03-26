@@ -1712,15 +1712,15 @@ fn test_arithmetic_expression_with_command_substitution_blocked() {
 }
 
 #[test]
-fn test_arithmetic_expression_safe_passes() {
-    // $((1 + 2)) — pure arithmetic should be fine
+fn test_arithmetic_expression_rejected() {
+    // $((1 + 2)) — arithmetic expansion is not supported and should error
     let output = rsh_bin().arg("echo $((1 + 2))").output().unwrap();
-    // This may or may not produce "3" depending on arithmetic expansion support,
-    // but it should not be rejected by the validator.
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "pure arithmetic expression should pass validation, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("arithmetic expansion"),
+        "expected arithmetic error, got: {}",
+        stderr
     );
 }
 
@@ -2714,4 +2714,189 @@ fn test_prime_claude_finds_git_root_from_subdir() {
     assert!(!subdir.join(".claude/settings.local.json").exists());
 
     std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+// --- Finding 1: --inherit-env strips dangerous library-injection vars ---
+
+#[test]
+fn test_inherit_env_strips_dangerous_vars() {
+    let dangerous_vars = [
+        ("LD_PRELOAD", "/tmp/evil.so"),
+        ("LD_LIBRARY_PATH", "/tmp/evil"),
+        ("LD_AUDIT", "/tmp/evil.so"),
+        ("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib"),
+        ("DYLD_FRAMEWORK_PATH", "/tmp/evil"),
+        ("DYLD_LIBRARY_PATH", "/tmp/evil"),
+    ];
+
+    for (var_name, var_value) in &dangerous_vars {
+        let output = rsh_bin()
+            .env(var_name, var_value)
+            .arg("--inherit-env")
+            .arg(format!("printenv {}", var_name))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.trim().is_empty(),
+            "{} should be stripped, got: {}",
+            var_name,
+            stdout
+        );
+    }
+}
+
+#[test]
+fn test_inherit_env_still_passes_normal_vars() {
+    let output = rsh_bin()
+        .env("MY_SAFE_VAR", "hello123")
+        .arg("--inherit-env")
+        .arg("printenv MY_SAFE_VAR")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello123");
+}
+
+// --- Finding 2: Recursion depth guard on command substitution ---
+
+#[test]
+fn test_deeply_nested_substitution_rejected() {
+    // 17 levels deep — exceeds the cap of 16
+    let depth = 17;
+    let mut cmd = String::from("hello");
+    for _ in 0..depth {
+        cmd = format!("echo $({})", cmd);
+    }
+    let output = rsh_bin().arg(&cmd).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("nested too deeply"),
+        "expected depth error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_reasonable_nesting_allowed() {
+    // 2 levels deep — well within the cap
+    let output = rsh_bin()
+        .arg("echo $(echo $(echo hello))")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim(), "hello");
+}
+
+// --- Finding 3: Arithmetic expansion returns error ---
+
+#[test]
+fn test_arithmetic_expansion_error() {
+    let output = rsh_bin().arg("echo $((1+2))").output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("arithmetic expansion"),
+        "expected arithmetic error, got: {}",
+        stderr
+    );
+}
+
+// --- Finding 4: Missing test coverage for existing security checks ---
+
+#[test]
+fn test_sed_path_traversal_rejected() {
+    assert_rejected_with("sed -n '1p' ../../etc/passwd", "path traversal");
+}
+
+#[test]
+fn test_sed_absolute_path_rejected() {
+    assert_rejected_with("sed -n '1p' /etc/passwd", "absolute path");
+}
+
+#[test]
+fn test_input_redirect_rejected() {
+    assert_rejected_with("cat < file.txt", "input redirection");
+}
+
+#[test]
+fn test_compound_redirect_brace_group() {
+    let tmp = std::env::temp_dir();
+    let workdir = tmp.join("rsh_test_brace_redirect");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("{ echo hi; } > out.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let content = std::fs::read_to_string(workdir.join("out.txt")).unwrap();
+    assert!(content.contains("hi"), "content was: {}", content);
+
+    let _ = std::fs::remove_dir_all(&workdir);
+}
+
+#[test]
+fn test_compound_redirect_for_loop() {
+    let tmp = std::env::temp_dir();
+    let workdir = tmp.join("rsh_test_for_redirect");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("for x in a b; do echo $x; done > out.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let content = std::fs::read_to_string(workdir.join("out.txt")).unwrap();
+    assert!(content.contains("a"), "content was: {}", content);
+    assert!(content.contains("b"), "content was: {}", content);
+
+    let _ = std::fs::remove_dir_all(&workdir);
+}
+
+#[test]
+fn test_multiple_redirects_sequential() {
+    let tmp = std::env::temp_dir();
+    let workdir = tmp.join("rsh_test_multi_redirect");
+    std::fs::create_dir_all(&workdir).unwrap();
+
+    // Two commands, each with their own redirect
+    let output = rsh_bin()
+        .arg("--allow-redirects")
+        .arg("--dir")
+        .arg(workdir.to_str().unwrap())
+        .arg("echo first > a.txt; echo second > b.txt")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let a = std::fs::read_to_string(workdir.join("a.txt")).unwrap();
+    let b = std::fs::read_to_string(workdir.join("b.txt")).unwrap();
+    assert!(a.contains("first"), "a.txt was: {}", a);
+    assert!(b.contains("second"), "b.txt was: {}", b);
+
+    let _ = std::fs::remove_dir_all(&workdir);
 }

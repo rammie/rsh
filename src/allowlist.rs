@@ -25,6 +25,10 @@ pub const FORWARDED_VARS: &[&str] = &[
     "HOME", "USER", "PATH", "PWD", "LANG", "TERM", "SHELL", "TMPDIR",
 ];
 
+/// Maximum nesting depth for command substitutions $(...).
+/// Shared between validator (structural check) and executor (runtime check).
+pub const MAX_SUBSTITUTION_DEPTH: usize = 16;
+
 #[derive(Debug, Clone)]
 pub struct Allowlist {
     commands: HashSet<String>,

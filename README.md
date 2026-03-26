@@ -141,6 +141,17 @@ The validator and executor have distinct security roles. The **validator** perfo
 
 This split exists because bash is a dynamic language. Static analysis of the AST cannot predict what strings expansion will produce (variable substitution, command substitution, glob expansion, parameter expansion all happen at runtime). Rather than trying to statically analyze every bash string-construction mechanism, the validator handles structural concerns and the executor enforces value constraints on the actual expanded strings that get passed to processes.
 
+### Why not OS-level sandboxing?
+
+OS-level sandboxing (macOS Seatbelt, Linux Landlock/seccomp) enforces filesystem restrictions at the kernel level. This sounds like a natural fit — make the filesystem read-only and you don't need to worry about dangerous flags. In practice, it doesn't replace rsh's approach:
+
+- **Commands need system paths to run.** Even `ls` requires read access to `/usr/lib` (shared libraries), `/etc` (locale), `/dev` (devices), and the binary itself in `/usr/bin`. A sandbox must allow these paths, which means commands can still read files outside the working directory — exactly the attack surface rsh's argument validation prevents.
+- **Sandboxing doesn't restrict command execution.** Tools like `xargs`, `awk` (`system()`), and `sed` (`s///e`) execute arbitrary commands. A read-only sandbox prevents writes but the executed commands can still read sensitive system files from the allowed paths.
+- **It doesn't enable a larger allowlist.** The main motivation for sandboxing would be safely adding powerful commands (sed, awk, xargs). But since the sandbox must allow system paths for anything to work, these tools could still read files outside the working directory — the same reason they're excluded today.
+- **It adds platform-specific complexity.** Seatbelt (macOS) and Landlock (Linux) have different APIs, kernel version requirements, and failure modes. The sandbox degrades silently on older systems, creating a false sense of security.
+
+rsh's approach — restricting *which commands* can run and *what arguments* they receive — is simpler, portable, and auditable. The allowlist is the security boundary, not the kernel.
+
 ### What rsh does NOT protect against
 
 - **Allowlisted commands behaving dangerously.** The allowlist is intentionally read-only, but allowed commands can still read any file reachable from the working directory.
