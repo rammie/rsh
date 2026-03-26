@@ -1839,11 +1839,19 @@ fn test_concatenated_flag_with_number_allowed() {
 #[test]
 fn test_concatenated_flag_relative_path_allowed() {
     // grep -f with a relative path (no traversal) should be allowed
-    // Use Cargo.toml as the pattern file — it exists and has content
+    // Use a file with a simple pattern that won't cause regex errors
+    let tmp = std::env::temp_dir().join(format!(
+        "rsh_test_flag_relpath_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&tmp).unwrap();
+    std::fs::write(tmp.join("patterns.txt"), "name\n").unwrap();
+    std::fs::write(tmp.join("data.txt"), "name = rsh\nversion = 1\n").unwrap();
+
     let output = rsh_bin()
         .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("grep -fCargo.toml Cargo.toml")
+        .arg(tmp.to_str().unwrap())
+        .arg("grep -fpatterns.txt data.txt")
         .output()
         .unwrap();
     assert!(
@@ -1851,6 +1859,10 @@ fn test_concatenated_flag_relative_path_allowed() {
         "concatenated flag with relative path should work, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("name = rsh"));
+
+    std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 #[test]

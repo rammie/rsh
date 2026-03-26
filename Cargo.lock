@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "rsh"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "brush-parser",
  "glob",
