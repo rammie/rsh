@@ -2467,3 +2467,146 @@ fn test_sed_in_for_loop() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2);
 }
+
+// ---- --version tests ----
+
+#[test]
+fn test_version_flag() {
+    let out = rsh_bin().arg("--version").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.starts_with("rsh "),
+        "expected 'rsh <version>', got: {}",
+        stdout
+    );
+    // Should match Cargo.toml version
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn test_version_short_flag() {
+    let out = rsh_bin().arg("-V").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("rsh "));
+}
+
+// ---- --prime tests ----
+
+#[test]
+fn test_prime_still_works() {
+    let out = rsh_bin().arg("--prime").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Allowed commands:"));
+}
+
+// ---- --prime claude tests ----
+
+/// Create a temp dir with `.git` init'd, returning the path. Caller must clean up.
+fn create_test_git_dir(suffix: &str) -> std::path::PathBuf {
+    let tmp = std::env::temp_dir().join(format!("rsh_test_{}_{}", suffix, std::process::id()));
+    std::fs::create_dir_all(tmp.join(".git")).unwrap();
+    tmp
+}
+
+fn run_prime_claude(dir: &std::path::Path) -> std::process::Output {
+    let out = rsh_bin()
+        .arg("--dir")
+        .arg(dir.to_str().unwrap())
+        .arg("--prime")
+        .arg("claude")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
+}
+
+fn read_settings(root: &std::path::Path) -> serde_json::Value {
+    let content = std::fs::read_to_string(root.join(".claude/settings.local.json")).unwrap();
+    serde_json::from_str(&content).unwrap()
+}
+
+#[test]
+fn test_prime_claude_creates_hook() {
+    let tmp = create_test_git_dir("prime_claude");
+    run_prime_claude(&tmp);
+
+    let settings_path = tmp.join(".claude/settings.local.json");
+    assert!(settings_path.exists(), "settings.local.json should exist");
+
+    let content = std::fs::read_to_string(&settings_path).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    // Verify structure
+    let hooks = &settings["hooks"]["SessionStart"];
+    assert!(hooks.is_array(), "SessionStart should be an array");
+    let arr = hooks.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0]["hooks"][0]["command"], "rsh --prime");
+    assert_eq!(arr[0]["hooks"][0]["type"], "command");
+    assert_eq!(arr[0]["matcher"], "");
+
+    // Verify trailing newline
+    assert!(content.ends_with('\n'));
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+#[test]
+fn test_prime_claude_idempotent() {
+    let tmp = create_test_git_dir("prime_claude_idem");
+
+    // Run twice
+    run_prime_claude(&tmp);
+    run_prime_claude(&tmp);
+
+    let settings = read_settings(&tmp);
+    let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
+    assert_eq!(arr.len(), 1, "hook should not be duplicated");
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+#[test]
+fn test_prime_claude_preserves_existing_settings() {
+    let tmp = create_test_git_dir("prime_claude_preserve");
+    std::fs::create_dir_all(tmp.join(".claude")).unwrap();
+
+    // Write existing settings
+    std::fs::write(
+        tmp.join(".claude/settings.local.json"),
+        r#"{"permissions": {"allow": ["echo"]}}"#,
+    )
+    .unwrap();
+
+    run_prime_claude(&tmp);
+
+    let settings = read_settings(&tmp);
+    // Existing settings preserved
+    assert_eq!(settings["permissions"]["allow"][0], "echo");
+    // Hook added
+    assert!(settings["hooks"]["SessionStart"].is_array());
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+#[test]
+fn test_prime_claude_finds_git_root_from_subdir() {
+    let tmp = create_test_git_dir("prime_claude_subdir");
+    let subdir = tmp.join("src/deep");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    run_prime_claude(&subdir);
+
+    // Settings should be at git root, not in subdir
+    assert!(tmp.join(".claude/settings.local.json").exists());
+    assert!(!subdir.join(".claude/settings.local.json").exists());
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
