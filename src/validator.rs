@@ -428,8 +428,12 @@ impl<'a> ValidatorContext<'a> {
                 validate_opt(replacement)?;
                 parameter
             }
-            ParameterExpr::VariableNames { .. } => return Ok(()),
-            ParameterExpr::MemberKeys { .. } => return Ok(()),
+            ParameterExpr::VariableNames { .. } => {
+                return Err("variable name expansion (${!prefix@}) is not supported".to_string());
+            }
+            ParameterExpr::MemberKeys { .. } => {
+                return Err("associative array key expansion (${!name[@]}) is not supported".to_string());
+            }
         };
 
         // Validate the parameter name

@@ -88,6 +88,8 @@ Patterns for multi-step reads:
 - stdout, stderr, and exit codes work exactly like bash
 - Rejected commands print an error to stderr and exit 1
 - Environment is sanitized (PATH, LANG, etc. are forwarded to commands)
+- With --inherit-env, all parent environment variables are visible to commands (including printenv, env)
+- With --allow-redirects, output redirects follow symlinks in the working directory
 "
     );
     std::process::exit(0);

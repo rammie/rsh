@@ -58,3 +58,5 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)
 - `--prime` flag outputs an LLM-ready description of capabilities
 - Symlink traversal is a non-goal: rsh restricts which commands can run and validates argument strings for path traversal, but does not prevent commands from following symlinks to files outside the working directory. The caller is responsible for ensuring the working directory does not contain symlinks to sensitive locations.
+- `--inherit-env` exposes all parent environment variables to child processes — including `printenv` and `env`, which are on the allowlist. Callers should be aware that sensitive env vars (tokens, secrets) will be readable.
+- `--allow-redirects` follows symlinks: if a file in the working directory is a symlink to an external path, `>` and `>>` will write through the symlink. This is consistent with the symlink non-goal above but has higher impact since redirects are write operations.

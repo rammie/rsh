@@ -4,17 +4,23 @@ fn rsh_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rsh"))
 }
 
-/// Assert that a command is rejected with "not in allowlist" in stderr.
-fn assert_not_in_allowlist(cmd: &str) {
+/// Assert that a command is rejected with the given substring in stderr.
+fn assert_rejected_with(cmd: &str, expected: &str) {
     let output = rsh_bin().arg(cmd).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not in allowlist"),
-        "expected 'not in allowlist' for '{}', got: {}",
+        stderr.contains(expected),
+        "expected '{}' for '{}', got: {}",
+        expected,
         cmd,
         stderr
     );
+}
+
+/// Assert that a command is rejected with "not in allowlist" in stderr.
+fn assert_not_in_allowlist(cmd: &str) {
+    assert_rejected_with(cmd, "not in allowlist");
 }
 
 #[test]
@@ -2478,6 +2484,93 @@ fn test_sed_in_for_loop() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(lines.len(), 2);
+}
+
+// ---- ANSI-C quoting tests ----
+
+#[test]
+fn test_ansi_c_quoting_not_expanded() {
+    // $'\x2F' would be '/' if expanded — verify brush-parser does NOT expand
+    // ANSI-C quoting, so hex escapes are passed as literal strings (no bypass possible)
+    let output = rsh_bin()
+        .arg("echo $'\\x2Fetc\\x2Fpasswd'")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Should contain the literal escape sequences, not expanded /etc/passwd
+    assert!(
+        !stdout.contains("/etc/passwd"),
+        "ANSI-C hex escapes should NOT be expanded to real paths, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_ansi_c_quoting_traversal_not_expanded() {
+    // $'\x2e\x2e\x2f' would be '../' if expanded — verify it's not
+    let output = rsh_bin()
+        .arg("echo $'\\x2e\\x2e\\x2ffile'")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("../"),
+        "ANSI-C hex escapes should NOT be expanded to traversal paths, got: {}",
+        stdout
+    );
+}
+
+// ---- Brace expansion tests ----
+
+#[test]
+fn test_brace_expansion_not_expanded() {
+    // brush-parser does not expand braces — they should be passed through as literals
+    let output = rsh_bin().arg("echo {a,b,c}").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "{a,b,c}",
+        "brace expansion should not be expanded — expected literal output"
+    );
+}
+
+// ---- Indirect/variable name expansion tests ----
+
+#[test]
+fn test_variable_names_expansion_rejected() {
+    assert_rejected_with("echo ${!PATH@}", "variable name expansion");
+}
+
+#[test]
+fn test_member_keys_expansion_rejected() {
+    assert_rejected_with("echo ${!arr[@]}", "key expansion");
+}
+
+// ---- Here-document and here-string tests ----
+
+#[test]
+fn test_here_document_rejected() {
+    assert_rejected_with("cat <<EOF\nhello\nEOF", "here-documents are not supported");
+}
+
+#[test]
+fn test_here_string_rejected() {
+    assert_rejected_with("cat <<< hello", "here-strings are not supported");
 }
 
 // ---- --version tests ----
