@@ -27,6 +27,7 @@ Complex attack vectors are handled during execution as `rsh` handles command dis
 - **`allowlist.rs`** — Pinned command allowlist (compile-time only, no runtime override). Defines `FORWARDED_VARS` (env vars passed to child processes; not available in command arguments).
 - **`validator.rs`** — Recursive AST security walker. Structural checks only: command allowlist, blocked flags (find -delete), variable reference approval, redirect gating, rejection of function defs/background/process substitution, and command substitution validation.
 - **`executor.rs`** — Walks the validated AST, expands words (variables, globs, command substitution), wires pipes between pipeline stages, handles loops/conditionals, spawns processes with sanitized environment. **The executor is the security boundary for dynamic values** — it re-validates command names, checks expanded arguments for absolute paths and `..` traversal, re-checks blocked flags, and validates redirect targets, all post-expansion. Manages signal handling (SIGINT/SIGTERM) and output truncation.
+- **`sed.rs`** — Built-in restricted sed: only supports `-n` with address + `p` command for line extraction (e.g., `sed -n '10,20p' file`). No real sed binary is executed — this runs entirely in-process, eliminating the risk of sed's `e` (execute), `w` (write), and `s///e` features.
 - **`glob.rs`** — Glob expansion scoped to working directory with path traversal and absolute path guards.
 
 ## Security Model: Validator vs Executor

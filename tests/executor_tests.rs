@@ -534,8 +534,19 @@ fn test_find_without_exec_allowed() {
 }
 
 #[test]
-fn test_sed_not_in_allowlist() {
-    assert_not_in_allowlist("echo hello | sed 's/hello/world/'");
+fn test_sed_substitute_rejected() {
+    // sed is a builtin that only supports -n with address+p; s command is not allowed
+    let out = rsh_bin()
+        .arg("echo hello | sed 's/hello/world/'")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("sed:"),
+        "expected sed error, got: {}",
+        stderr
+    );
 }
 
 #[test]
@@ -2245,4 +2256,214 @@ fn test_expanded_command_name_blocked() {
         "stderr: {}",
         stderr
     );
+}
+
+// --- Restricted sed builtin ---
+
+#[test]
+fn test_sed_single_line() {
+    let out = rsh_bin()
+        .arg("sed -n '1p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "[package]"
+    );
+}
+
+#[test]
+fn test_sed_line_range() {
+    let out = rsh_bin()
+        .arg("sed -n '2,4p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains("rsh"));
+}
+
+#[test]
+fn test_sed_last_line() {
+    let out = rsh_bin()
+        .arg("sed -n '$p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.trim().is_empty());
+}
+
+#[test]
+fn test_sed_range_to_last() {
+    let out = rsh_bin()
+        .arg("sed -n '1,2p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn test_sed_in_pipeline() {
+    let out = rsh_bin()
+        .arg("cat Cargo.toml | sed -n '1,3p'")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains("[package]"));
+}
+
+#[test]
+fn test_sed_pipeline_to_grep() {
+    let out = rsh_bin()
+        .arg("sed -n '1,10p' Cargo.toml | grep name")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("name"));
+}
+
+#[test]
+fn test_sed_multiple_expressions() {
+    let out = rsh_bin()
+        .arg("sed -n '1p;3p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn test_sed_multiple_e_flags() {
+    let out = rsh_bin()
+        .arg("sed -n -e '1p' -e '3p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn test_sed_no_n_flag_rejected() {
+    let out = rsh_bin()
+        .arg("sed '1p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("requires -n"));
+}
+
+#[test]
+fn test_sed_i_flag_rejected() {
+    let out = rsh_bin()
+        .arg("sed -n -i '1p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unsupported sed flag"));
+}
+
+#[test]
+fn test_sed_e_command_rejected() {
+    // The dangerous 'e' command (execute) must be rejected
+    let out = rsh_bin()
+        .arg("sed -n '1e' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unsupported sed command"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_sed_d_command_rejected() {
+    let out = rsh_bin()
+        .arg("sed -n '1d' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unsupported sed command"));
+}
+
+#[test]
+fn test_sed_w_command_rejected() {
+    let out = rsh_bin()
+        .arg("sed -n '1w /tmp/out' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unsupported sed command"));
+}
+
+#[test]
+fn test_sed_nonexistent_file() {
+    let out = rsh_bin()
+        .arg("sed -n '1p' nonexistent_file_xyz.txt")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("nonexistent_file_xyz.txt"));
+}
+
+#[test]
+fn test_sed_multiple_files() {
+    let out = rsh_bin()
+        .arg("sed -n '1p' Cargo.toml src/main.rs")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    // First line of each file
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("[package]"));
+    assert!(lines[1].contains("mod "));
+}
+
+#[test]
+fn test_sed_in_command_substitution() {
+    let out = rsh_bin()
+        .arg("echo $(sed -n '1p' Cargo.toml)")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "[package]"
+    );
+}
+
+#[test]
+fn test_sed_in_for_loop() {
+    let out = rsh_bin()
+        .arg("for f in Cargo.toml src/main.rs; do sed -n '1p' $f; done")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2);
 }

@@ -11,6 +11,7 @@ const DEFAULT_ALLOWLIST: &[&str] = &[
     "cat", "bat", "head", "tail", // List/inspect
     "ls", "eza", "tree", "stat", "file", "du", "wc", "pwd", "which",
     // Text processing (read-only)
+    "sed", // built-in: only -n with address+p (line extraction), no real sed exec
     "sort", "uniq", "cut", "tr", "diff", "comm", // Path utilities
     "basename", "dirname", "realpath", // Misc
     "echo", "printf", "date", "true", "false", "test", "printenv",

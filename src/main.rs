@@ -1,6 +1,7 @@
 mod allowlist;
 mod executor;
 mod glob;
+mod sed;
 mod validator;
 
 use allowlist::Allowlist;
@@ -43,6 +44,15 @@ IMPORTANT — use relative paths only:
 - Variable references ($HOME, etc.) and tilde (~) are REJECTED in arguments
 - To explore from the working directory: ls ., find . -name '*.ts', tree .
 
+sed (restricted — line extraction only):
+- sed -n '10,20p' file                           # print lines 10-20
+- sed -n '5p' file                               # print line 5
+- sed -n '$p' file                               # print last line
+- sed -n '5,$p' file                             # print from line 5 to end
+- sed -n '1p;10,20p' file                        # multiple ranges
+- cat file | sed -n '1,5p'                       # works in pipelines
+- Only -n flag and 'p' command are supported (no substitution, no -i, no scripting)
+
 Not allowed:
 - Commands outside the allowlist above — the allowlist is fixed and cannot be changed
 - find -exec / -execdir (use command substitution or for-loops instead)
@@ -59,15 +69,15 @@ Patterns for multi-step reads:
     );
     if has_rg {
         println!("  rg \"pattern\" -t rust -C 3                # search by content + file type");
-        println!("  rg \"pattern\" -g \"*.ts\" .                 # search with glob filter (NOT --include)");
-        println!("  rg \"pattern\" -l .                         # list matching files only");
+        println!("  rg \"pattern\" -g \"*.ts\" .               # search with glob filter (NOT --include)");
+        println!("  rg \"pattern\" -l .                        # list matching files only");
     }
     println!("  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type");
     if has_fd {
         println!("  fd -e rs | head -20                        # find files by extension");
     }
-    println!("  tree -L 2 .                                # overview of directory structure");
-    println!("  grep pattern $(find . -name \"*.rs\")         # find by name, then search");
+    println!("  tree -L 2 .                                    # overview of directory structure");
+    println!("  grep pattern $(find . -name \"*.rs\")          # find by name, then search");
     println!(
         "  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect"
     );

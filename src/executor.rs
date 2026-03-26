@@ -10,6 +10,7 @@ use brush_parser::ParserOptions;
 
 use crate::allowlist::{self, Allowlist};
 use crate::glob as rsh_glob;
+use crate::sed as rsh_sed;
 use crate::validator::{self, ValidatorConfig};
 
 /// Extract exit code from a process status, mapping signal death to 128 + signal (bash convention).
@@ -71,6 +72,11 @@ impl Output {
 
 /// Maximum iterations for any loop (for, while, until).
 const MAX_LOOP_ITERATIONS: usize = 10_000;
+
+/// Check if a command name is a builtin (executed in-process, not spawned).
+fn is_builtin(name: &str) -> bool {
+    name == "sed"
+}
 
 pub struct Executor {
     allowlist: Allowlist,
@@ -250,7 +256,23 @@ impl Executor {
             .iter()
             .all(|c| matches!(c, BrushCommand::Simple(_)));
 
-        if all_simple {
+        // Check if any command is a builtin (e.g. sed) — builtins run in-process
+        // and can't be wired with OS pipes, so fall back to sequential execution.
+        // Safe to check raw Word.value here: the validator rejects variable expansion
+        // in command position, so the literal name is the final name.
+        let has_builtin = all_simple
+            && commands.iter().any(|c| {
+                if let BrushCommand::Simple(s) = c {
+                    s.word_or_name
+                        .as_ref()
+                        .map(|w| is_builtin(&w.value))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            });
+
+        if all_simple && !has_builtin {
             return self.execute_simple_pipeline(commands, local_vars, pipeline.bang);
         }
 
@@ -416,6 +438,19 @@ impl Executor {
     ) -> Result<(String, String, i32), String> {
         let (name, args, redirects, _stderr_behavior) =
             self.extract_simple_command(cmd, local_vars)?;
+
+        // Built-in commands: executed in-process, no exec.
+        // Dispatch must match is_builtin() above.
+        if is_builtin(&name) {
+            let (mut stdout, stderr, exit_code) = match name.as_str() {
+                "sed" => rsh_sed::execute(&args, &self.working_dir, stdin_data.as_deref()),
+                _ => unreachable!("is_builtin returned true for unknown command"),
+            };
+            if !redirects.is_empty() {
+                stdout = self.apply_redirects(&stdout, &redirects)?;
+            }
+            return Ok((stdout, stderr, exit_code));
+        }
 
         let mut process = Command::new(&name);
         process.args(&args);
