@@ -70,9 +70,6 @@ rsh --dir ./project "wc -l \$(find src -name '*.rs')"
 # Working directory
 rsh --dir /path/to/project "find . -name '*.rs' | wc -l"
 
-# Custom allowlist
-rsh --allow "grep,cat,head,wc" "grep TODO src/*.rs | wc -l"
-
 # Enable file output
 rsh --allow-redirects --dir /tmp "echo hello >> output.txt"
 
@@ -101,7 +98,6 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--allow <cmds>` | built-in defaults | Comma-separated command allowlist |
 | `--allow-redirects` | off | Allow `>` and `>>` output redirects |
 | `--max-output <bytes>` | 10MB | Truncate combined stdout+stderr beyond this limit |
 | `--inherit-env` | off | Pass full parent environment to child processes |
@@ -109,16 +105,17 @@ Validation errors are written to stderr with an `rsh:` prefix. If output exceeds
 | `--prime` | — | Print an LLM-ready description of rsh's capabilities |
 | `-c <cmd>` | — | Accept command after `-c` (bash compatibility) |
 
-### Default allowlist
+### Command allowlist
 
 ```
 grep, rg, ugrep, find, fd, cat, bat, head, tail, ls, eza, stat, file, du, wc, pwd, which,
-sort, uniq, cut, tr, diff, comm, basename, dirname, realpath, echo, date, true, false, test
+sort, uniq, cut, tr, diff, comm, basename, dirname, realpath, echo, printf, date, true, false,
+test, printenv
 ```
 
-Note: Dangerous flags are blocked — `find -delete`/`-exec`/`-execdir`/`-fprint`/etc., `fd -x`/`--exec`/`-X`/`--exec-batch`, `sort -o`/`--output`. `awk` and `sed` are **always blocked, even if added via `--allow`** — `awk`'s `system()` can execute arbitrary commands, and `sed` can execute commands (GNU sed `e`), read arbitrary files (`r`/`R`), and write arbitrary files (`w`/`W`) via built-in commands that bypass rsh's path restrictions. `xargs` is intentionally excluded from the default allowlist as it can run sub-commands.
+The allowlist is pinned at compile time and cannot be changed at runtime. There is no `--allow` flag, no config file, and no environment variable override. This is intentional: instead of maintaining an ever-growing blocklist of dangerous commands (shells, scripting languages, tools that exec), only explicitly listed read-only commands can run.
 
-Override with `--allow`, the `RSH_ALLOWLIST` environment variable, or a `~/.rsh/allowlist` config file (one command per line).
+Dangerous flags on allowed commands are still blocked: `find -delete`/`-exec`/`-execdir`/`-fprint`/etc., `fd -x`/`--exec`/`-X`/`--exec-batch`, `sort -o`/`--output`.
 
 ## Security model
 
@@ -132,7 +129,6 @@ rsh is **defense in depth** — multiple independent layers, each sufficient to 
 | **Redirect gating** | Validate + Execute | File writes disabled by default; path checks on expanded targets when enabled |
 | **AST structural checks** | Validate | Function definitions, background `&`, process substitution, here-docs |
 | **Variable rejection** | Validate | All env var references blocked in arguments (blocks `$SECRET`, `$HOME`, etc.) |
-| **Hard-blocked commands** | Validate | `awk`, `sed` — always rejected, even with `--allow` (can execute arbitrary commands) |
 | **Blocked flags** | Validate + Execute | `find -delete`/`-exec`, `fd --exec`, `sort -o` — checked on literals and expanded args |
 | **Environment sanitization** | Execute | Only approved variables forwarded to child processes |
 | **Signal handling** | Execute | SIGINT/SIGTERM forwarded to children; exit 128+signal on signal death |
@@ -145,20 +141,9 @@ The validator and executor have distinct security roles. The **validator** perfo
 
 This split exists because bash is a dynamic language. Static analysis of the AST cannot predict what strings expansion will produce (variable substitution, command substitution, glob expansion, parameter expansion all happen at runtime). Rather than trying to statically analyze every bash string-construction mechanism, the validator handles structural concerns and the executor enforces value constraints on the actual expanded strings that get passed to processes.
 
-### Trust boundaries
-
-The allowlist can be configured from four sources (last wins):
-
-1. Built-in defaults (read-only commands)
-2. Config file: `~/.rsh/allowlist`
-3. Environment variable: `RSH_ALLOWLIST`
-4. CLI flag: `--allow`
-
-Sources 2 and 3 are trusted inputs. Ensure they are not writable by untrusted users. The `--allow` flag is the most secure override since it is explicit per invocation.
-
 ### What rsh does NOT protect against
 
-- **Allowlisted commands behaving dangerously.** If you allowlist `rm`, rsh will happily run `rm -rf .`. The default allowlist is intentionally read-only.
+- **Allowlisted commands behaving dangerously.** The allowlist is intentionally read-only, but allowed commands can still read any file reachable from the working directory.
 - **Symlink escapes.** A symlink inside the working directory pointing elsewhere can be followed by allowlisted commands. Redirect path traversal checks do catch symlinks, but argument paths are not resolved.
 - **Information disclosure via command output.** An allowlisted `cat` can read any file reachable from the working directory (without `..` traversal). Scope the working directory and allowlist appropriately.
 
@@ -189,7 +174,7 @@ The key principle: **structural checks before execution, value checks after expa
 
 ```bash
 cargo build          # build
-cargo test           # run all tests (159 tests)
+cargo test           # run all tests
 cargo run -- "ls"    # run directly
 ```
 

@@ -14,66 +14,6 @@ use brush_parser::ParserOptions;
 
 use crate::allowlist::Allowlist;
 
-/// Commands that are always blocked, even if added to the allowlist via --allow.
-/// These commands have built-in capabilities that bypass rsh's security model.
-const ALWAYS_BLOCKED: &[(&str, &str)] = &[
-    // Text processors with hidden execution capabilities
-    (
-        "awk",
-        "awk can execute arbitrary commands via system() and write files",
-    ),
-    (
-        "gawk",
-        "gawk can execute arbitrary commands via system() and write files",
-    ),
-    (
-        "mawk",
-        "mawk can execute arbitrary commands via system() and write files",
-    ),
-    (
-        "nawk",
-        "nawk can execute arbitrary commands via system() and write files",
-    ),
-    (
-        "sed",
-        "sed can execute arbitrary commands (GNU sed 'e') and read/write arbitrary files (r/w commands)",
-    ),
-    (
-        "gsed",
-        "gsed can execute arbitrary commands ('e') and read/write arbitrary files (r/w commands)",
-    ),
-    // Shells — bypass rsh's entire security model
-    ("sh", "sh executes arbitrary commands, bypassing rsh"),
-    ("bash", "bash executes arbitrary commands, bypassing rsh"),
-    ("zsh", "zsh executes arbitrary commands, bypassing rsh"),
-    ("dash", "dash executes arbitrary commands, bypassing rsh"),
-    ("ksh", "ksh executes arbitrary commands, bypassing rsh"),
-    ("csh", "csh executes arbitrary commands, bypassing rsh"),
-    ("tcsh", "tcsh executes arbitrary commands, bypassing rsh"),
-    ("fish", "fish executes arbitrary commands, bypassing rsh"),
-    // Commands that spawn arbitrary subprocesses
-    (
-        "env",
-        "env can execute arbitrary commands (env cmd args...)",
-    ),
-    (
-        "xargs",
-        "xargs can execute arbitrary commands from stdin",
-    ),
-    // Scripting interpreters — arbitrary code execution
-    (
-        "python",
-        "python executes arbitrary code, bypassing rsh",
-    ),
-    (
-        "python3",
-        "python3 executes arbitrary code, bypassing rsh",
-    ),
-    ("perl", "perl executes arbitrary code, bypassing rsh"),
-    ("ruby", "ruby executes arbitrary code, bypassing rsh"),
-    ("node", "node executes arbitrary code, bypassing rsh"),
-];
-
 /// Flags that are always forbidden on specific commands (destructive or interactive).
 const UNCONDITIONALLY_BLOCKED: &[(&str, &[&str])] = &[
     (
@@ -759,18 +699,12 @@ pub fn check_blocked_flags_expanded(cmd: &str, args: &[String]) -> Result<(), St
     check_blocked_flags(cmd, &refs)
 }
 
-/// Check that a command name is permitted: not in ALWAYS_BLOCKED and present in the allowlist.
+/// Check that a command name is present in the allowlist.
 /// Used at validation time (on literal names) and at execution time (on expanded names).
 pub fn check_command_allowed(
     name: &str,
     allowlist: &crate::allowlist::Allowlist,
 ) -> Result<(), String> {
-    if let Some((_, reason)) = ALWAYS_BLOCKED.iter().find(|(c, _)| *c == name) {
-        return Err(format!(
-            "command '{}' is blocked even with --allow: {}",
-            name, reason
-        ));
-    }
     if !allowlist.is_allowed(name) {
         return Err(format!(
             "command '{}' not in allowlist (allowed: {})",

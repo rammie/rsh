@@ -4,6 +4,19 @@ fn rsh_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_rsh"))
 }
 
+/// Assert that a command is rejected with "not in allowlist" in stderr.
+fn assert_not_in_allowlist(cmd: &str) {
+    let output = rsh_bin().arg(cmd).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "expected 'not in allowlist' for '{}', got: {}",
+        cmd,
+        stderr
+    );
+}
+
 #[test]
 fn test_simple_echo() {
     let output = rsh_bin().arg("echo hello world").output().unwrap();
@@ -53,17 +66,8 @@ fn test_pwd() {
 }
 
 #[test]
-fn test_custom_allowlist() {
-    // With a custom allowlist that only allows 'echo', 'ls' should be rejected
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("echo")
-        .arg("ls")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not in allowlist"));
+fn test_disallowed_command_rejected() {
+    assert_not_in_allowlist("curl http://example.com");
 }
 
 #[test]
@@ -350,11 +354,8 @@ fn test_double_quoted_unapproved_var_rejected_at_validate() {
 #[test]
 fn test_env_sanitized_by_default() {
     // Set a custom env var and verify the child can't see it.
-    // Use printenv (allowed via --allow) instead of env (hard-blocked).
     let output = rsh_bin()
         .env("RSH_TEST_SECRET", "supersecret")
-        .arg("--allow")
-        .arg("printenv")
         .arg("printenv")
         .output()
         .unwrap();
@@ -377,8 +378,6 @@ fn test_env_inherited_with_flag() {
     let output = rsh_bin()
         .env("RSH_TEST_VISIBLE", "yes")
         .arg("--inherit-env")
-        .arg("--allow")
-        .arg("printenv")
         .arg("printenv")
         .output()
         .unwrap();
@@ -396,20 +395,8 @@ fn test_env_inherited_with_flag() {
 }
 
 #[test]
-fn test_env_hard_blocked_even_with_allow() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("env")
-        .arg("env")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr was: {}",
-        stderr
-    );
+fn test_env_not_in_allowlist() {
+    assert_not_in_allowlist("env");
 }
 
 // --- S7: non-final pipeline redirect ---
@@ -547,66 +534,13 @@ fn test_find_without_exec_allowed() {
 }
 
 #[test]
-fn test_sed_hard_blocked() {
-    let output = rsh_bin()
-        .arg("echo hello | sed 's/hello/world/'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "expected hard-block error, got: {}",
-        stderr
-    );
+fn test_sed_not_in_allowlist() {
+    assert_not_in_allowlist("echo hello | sed 's/hello/world/'");
 }
 
 #[test]
-fn test_sed_hard_blocked_even_with_allow() {
-    // sed must be rejected even when explicitly added to the allowlist
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("sed,echo")
-        .arg("echo hello | sed 's/hello/world/'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "sed should be hard-blocked even when in allowlist, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_xargs_hard_blocked() {
-    let output = rsh_bin().arg("echo hello | xargs echo").output().unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("xargs"), "stderr was: {}", stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr was: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_xargs_hard_blocked_even_with_allow() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("xargs,echo")
-        .arg("echo hello | xargs echo")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr was: {}",
-        stderr
-    );
+fn test_xargs_not_in_allowlist() {
+    assert_not_in_allowlist("echo hello | xargs echo");
 }
 
 #[test]
@@ -649,8 +583,6 @@ fn test_for_loop_with_find() {
 fn test_fd_exec_blocked() {
     // fd --exec should be blocked
     let output = rsh_bin()
-        .arg("--allow")
-        .arg("fd,grep")
         .arg("fd -e rs --exec grep -l 'fn main'")
         .output()
         .unwrap();
@@ -1017,35 +949,8 @@ fn test_escape_realpath_substitution_blocked() {
 }
 
 #[test]
-fn test_awk_hard_blocked() {
-    let output = rsh_bin()
-        .arg("echo hello | awk '{print}'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "expected hard-block error, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_awk_hard_blocked_even_with_allow() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("awk,echo")
-        .arg("echo hello | awk '{print}'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "awk should be hard-blocked even when in allowlist, got: {}",
-        stderr
-    );
+fn test_awk_not_in_allowlist() {
+    assert_not_in_allowlist("echo hello | awk '{print}'");
 }
 
 // --- Parameter expansion sub-expression validation ---
@@ -1525,8 +1430,6 @@ fn test_no_env_leak_through_for_loop_var_name() {
     // should use the loop value, not the env value
     let output = rsh_bin()
         .env("RSH_TEST_VAR", "leaked_secret")
-        .arg("--allow")
-        .arg("echo")
         .arg(r#"for RSH_TEST_VAR in safe_value; do echo "$RSH_TEST_VAR"; done"#)
         .output()
         .unwrap();
@@ -1956,45 +1859,13 @@ fn test_concatenated_flag_post_expansion_blocked() {
 }
 
 // ============================================================
-// less removed from default allowlist
+// less not in allowlist
 // ============================================================
 
 #[test]
-fn test_less_not_in_default_allowlist() {
+fn test_less_not_in_allowlist() {
     // less has interactive escape capabilities (pipe to commands, open editor)
-    // and should not be in the default allowlist
-    let output = rsh_bin().arg("less Cargo.toml").output().unwrap();
-    assert!(
-        !output.status.success(),
-        "less should not be in default allowlist"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not in allowlist"),
-        "expected allowlist rejection, got: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_less_allowed_with_explicit_allow() {
-    // less can still be added explicitly via --allow
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("less")
-        .arg("--dir")
-        .arg(env!("CARGO_MANIFEST_DIR"))
-        .arg("less Cargo.toml")
-        .output()
-        .unwrap();
-    // We don't assert success because less may fail without a TTY,
-    // but it should NOT fail with "not in allowlist"
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("not in allowlist"),
-        "less should be allowed with explicit --allow, got: {}",
-        stderr
-    );
+    assert_not_in_allowlist("less Cargo.toml");
 }
 
 // ============================================================
@@ -2137,8 +2008,6 @@ fn test_find_exec_blocked_via_for_loop_variable() {
 #[test]
 fn test_fd_exec_blocked_via_command_substitution() {
     let output = rsh_bin()
-        .arg("--allow")
-        .arg("fd,echo")
         .arg("fd pattern $(echo --exec) cat")
         .output()
         .unwrap();
@@ -2183,91 +2052,19 @@ fn test_sort_output_blocked_via_for_loop_variable() {
     );
 }
 
-// --- Hard-blocked commands ---
+// --- Disallowed commands (shells, interpreters, dangerous tools) ---
 
 #[test]
-fn test_sh_hard_blocked() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("sh")
-        .arg("sh -c 'echo hello'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr: {}",
-        stderr
-    );
+fn test_shells_not_in_allowlist() {
+    assert_not_in_allowlist("sh -c 'echo hello'");
+    assert_not_in_allowlist("bash -c 'echo hello'");
 }
 
 #[test]
-fn test_bash_hard_blocked() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("bash")
-        .arg("bash -c 'echo hello'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_python_hard_blocked() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("python")
-        .arg("python -c 'print(1)'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_node_hard_blocked() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("node")
-        .arg("node -e 'console.log(1)'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr: {}",
-        stderr
-    );
-}
-
-#[test]
-fn test_perl_hard_blocked() {
-    let output = rsh_bin()
-        .arg("--allow")
-        .arg("perl")
-        .arg("perl -e 'print 1'")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("blocked even with --allow"),
-        "stderr: {}",
-        stderr
-    );
+fn test_interpreters_not_in_allowlist() {
+    assert_not_in_allowlist("python -c 'print(1)'");
+    assert_not_in_allowlist("node -e 'console.log(1)'");
+    assert_not_in_allowlist("perl -e 'print 1'");
 }
 
 // --- Defense-in-depth: expanded command name re-validation ---

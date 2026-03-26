@@ -26,9 +26,6 @@ fn test_and_or_now_supported() {
 fn test_or_operator() {
     // || executes second command only if first fails
     let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--allow")
-        .arg("grep,echo,false")
         .arg("false || echo fallback")
         .output()
         .unwrap();
@@ -136,9 +133,6 @@ fn test_and_in_quotes_allowed() {
 fn test_if_then_fi_supported() {
     // if/then/fi is now supported
     let output = rsh_bin()
-        .arg("--inherit-env")
-        .arg("--allow")
-        .arg("true,echo")
         .arg("if true; then echo yes; fi")
         .output()
         .unwrap();
@@ -194,10 +188,9 @@ fn test_function_definition_rejected() {
 
 #[test]
 fn test_background_execution_rejected() {
+    // sleep isn't in the allowlist, but & should be rejected at the syntax level first
     let output = rsh_bin()
-        .arg("--allow")
-        .arg("sleep")
-        .arg("sleep 1 &")
+        .arg("echo hello &")
         .output()
         .unwrap();
     assert!(!output.status.success());

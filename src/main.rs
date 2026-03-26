@@ -44,10 +44,9 @@ IMPORTANT — use relative paths only:
 - To explore from the working directory: ls ., find . -name '*.ts', tree .
 
 Not allowed:
-- awk, sed, xargs, env, sh/bash/zsh, python/node/perl/ruby — always blocked, even with --allow
+- Commands outside the allowlist above — the allowlist is fixed and cannot be changed
 - find -exec / -execdir (use command substitution or for-loops instead)
 - Instead of: find . | xargs grep pattern → use: grep -r pattern . OR grep pattern $(find . -name '*.ext')
-- Commands outside the allowlist above
 - Function definitions, background execution (&), process substitution{redirect_note}
 
 Patterns for multi-step reads:
@@ -88,7 +87,6 @@ fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --allow <cmds>      Comma-separated allowlist (overrides defaults)");
     eprintln!("  --allow-redirects   Allow output redirects (> and >>)");
     eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
@@ -96,22 +94,13 @@ fn usage() {
     eprintln!("  --prime             Print an LLM-ready description of rsh's capabilities");
     eprintln!("  --help              Show this help");
     eprintln!();
-    eprintln!("Trust model:");
-    eprintln!("  The command allowlist is determined by (in priority order, last wins):");
-    eprintln!("    1. Built-in defaults (read-only commands)");
-    eprintln!("    2. Config file: ~/.rsh/allowlist (one command per line)");
-    eprintln!("    3. Environment variable: RSH_ALLOWLIST (comma-separated)");
-    eprintln!("    4. CLI flag: --allow (comma-separated)");
-    eprintln!("  Sources 2-3 are trusted inputs; ensure they are not writable by");
-    eprintln!("  untrusted users. The --allow flag (source 4) is the most secure");
-    eprintln!("  override as it is explicit per invocation.");
+    eprintln!("The command allowlist is pinned at compile time and cannot be changed at runtime.");
     std::process::exit(2);
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    let mut allow_flag: Option<String> = None;
     let mut allow_redirects = false;
     let mut max_output: usize = 10 * 1024 * 1024; // 10MB
     let mut inherit_env = false;
@@ -125,14 +114,6 @@ fn main() {
             "--help" | "-h" => usage(),
             "--prime" => {
                 show_prime = true;
-            }
-            "--allow" => {
-                i += 1;
-                if i >= args.len() {
-                    eprintln!("error: --allow requires a value");
-                    std::process::exit(2);
-                }
-                allow_flag = Some(args[i].clone());
             }
             "--allow-redirects" => {
                 allow_redirects = true;
@@ -179,8 +160,8 @@ fn main() {
         i += 1;
     }
 
-    // Load allowlist (needed for --prime and execution)
-    let al = Allowlist::load(allow_flag.as_deref());
+    // Load pinned allowlist
+    let al = Allowlist::new();
 
     if show_prime {
         prime(&al, allow_redirects);

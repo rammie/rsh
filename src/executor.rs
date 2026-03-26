@@ -466,8 +466,8 @@ impl Executor {
         };
 
         // Defense-in-depth: re-validate the expanded command name against
-        // the allowlist and ALWAYS_BLOCKED. The validator checks the raw
-        // Word.value, but expansion could change it (e.g., via variables).
+        // the allowlist. The validator checks the raw Word.value, but
+        // expansion could change it (e.g., via variables).
         validator::check_command_allowed(&name, &self.allowlist)?;
 
         let mut args = Vec::new();
