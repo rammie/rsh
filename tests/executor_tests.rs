@@ -2900,3 +2900,151 @@ fn test_multiple_redirects_sequential() {
 
     let _ = std::fs::remove_dir_all(&workdir);
 }
+
+// --- Multi-arg CLI invocation tests ---
+
+#[test]
+fn test_multi_arg_simple() {
+    // rsh echo hello world (multiple OS args instead of single string)
+    let output = rsh_bin()
+        .args(["echo", "hello", "world"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello world"
+    );
+}
+
+#[test]
+fn test_multi_arg_with_flags() {
+    // rsh echo -n hello
+    let output = rsh_bin().args(["echo", "-n", "hello"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello");
+}
+
+#[test]
+fn test_multi_arg_with_special_chars() {
+    // rsh echo "hello world" (arg with spaces gets quoted)
+    let output = rsh_bin()
+        .args(["echo", "hello world"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello world"
+    );
+}
+
+#[test]
+fn test_double_dash_simple() {
+    // rsh -- echo hello
+    let output = rsh_bin()
+        .args(["--", "echo", "hello"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello"
+    );
+}
+
+#[test]
+fn test_double_dash_with_rsh_flag_like_arg() {
+    // rsh -- echo --help (--help should be passed to echo, not rsh)
+    let output = rsh_bin()
+        .args(["--", "echo", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "--help"
+    );
+}
+
+#[test]
+fn test_double_dash_with_options_before() {
+    // rsh --inherit-env -- echo hello
+    let output = rsh_bin()
+        .args(["--inherit-env", "--", "echo", "hello"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello"
+    );
+}
+
+#[test]
+fn test_double_dash_empty_error() {
+    // rsh -- (no command after --)
+    let output = rsh_bin().args(["--"]).output().unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no command after --"),
+        "stderr: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_single_string_arg_backward_compat() {
+    // rsh "echo hello world" (original single-string form still works)
+    let output = rsh_bin().arg("echo hello world").output().unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "hello world"
+    );
+}
+
+#[test]
+fn test_multi_arg_disallowed_command() {
+    // rsh curl http://example.com (disallowed command via multi-arg)
+    let output = rsh_bin()
+        .args(["curl", "http://example.com"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not in allowlist"),
+        "stderr: {}",
+        stderr
+    );
+}

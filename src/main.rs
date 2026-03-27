@@ -7,6 +7,25 @@ mod validator;
 use allowlist::Allowlist;
 use executor::Executor;
 
+/// Join args into a single shell command string, quoting as needed.
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if arg.is_empty() {
+                "''".to_string()
+            } else if arg
+                .chars()
+                .all(|c| c.is_alphanumeric() || "._-/=@:,+%".contains(c))
+            {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn has_command(name: &str) -> bool {
     std::process::Command::new("which")
         .arg(name)
@@ -27,6 +46,7 @@ fn prime(al: &Allowlist, allow_redirects: bool) {
 Use rsh for read-only shell operations. rsh works like bash but only permits specific commands.
 
 Usage: rsh -c \"<command>\"
+       rsh <command> [args...]
 
 Allowed commands: {cmds}
 
@@ -197,6 +217,8 @@ fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
 
 fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
+    eprintln!("       rsh [OPTIONS] <COMMAND> [ARGS...]");
+    eprintln!("       rsh [OPTIONS] -- <COMMAND> [ARGS...]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --allow-redirects   Allow output redirects (> and >>)");
@@ -272,12 +294,26 @@ fn main() {
                 }
                 command_string = Some(args[i].clone());
             }
+            "--" => {
+                if i + 1 >= args.len() {
+                    eprintln!("error: no command after --");
+                    std::process::exit(2);
+                }
+                command_string = Some(shell_join(&args[i + 1..]));
+                break;
+            }
             _ => {
                 if args[i].starts_with('-') {
                     eprintln!("error: unknown flag '{}'", args[i]);
                     std::process::exit(2);
                 }
-                command_string = Some(args[i].clone());
+                // Single arg: use as-is for backward compat (rsh "echo hello")
+                if i + 1 == args.len() {
+                    command_string = Some(args[i].clone());
+                } else {
+                    command_string = Some(shell_join(&args[i..]));
+                }
+                break;
             }
         }
         i += 1;
