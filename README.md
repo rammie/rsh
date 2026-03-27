@@ -35,6 +35,22 @@ rsh closes that gap. It accepts a command string, parses it with [brush-parser](
 
 ## Installation
 
+Download the latest binary for your platform from [GitHub Releases](https://github.com/rammie/rsh/releases), or install with [mise](https://mise.jdx.dev/):
+
+```bash
+mise use -g "github:rammie/rsh@latest"
+```
+
+Then set up the Claude Code hook:
+
+```bash
+rsh --prime claude
+```
+
+This installs a Claude Code hook that automatically makes `rsh` available to Claude as a read-only shell. No other configuration needed.
+
+### Building from source
+
 ```
 cargo install --path .
 ```
