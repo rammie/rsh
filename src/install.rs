@@ -1,5 +1,5 @@
 /// Handle `rsh --install claude`: register MCP server and install SessionStart hook.
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn read_json_file(path: &std::path::Path) -> Value {
     match std::fs::read_to_string(path) {
@@ -23,11 +23,7 @@ fn write_json_file(path: &std::path::Path, value: &Value) {
     }
 }
 
-fn install_mcp_server(
-    project_root: &std::path::Path,
-    allow_redirects: bool,
-    inherit_env: bool,
-) {
+fn install_mcp_server(project_root: &std::path::Path, allow_redirects: bool, inherit_env: bool) {
     let mcp_path = project_root.join(".mcp.json");
 
     let mut args = vec!["--mcp".to_string()];
@@ -51,7 +47,10 @@ fn install_mcp_server(
     };
     let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
     let Some(servers) = servers.as_object_mut() else {
-        eprintln!("error: mcpServers in {} must be a JSON object", mcp_path.display());
+        eprintln!(
+            "error: mcpServers in {} must be a JSON object",
+            mcp_path.display()
+        );
         std::process::exit(1);
     };
     servers.insert("rsh".to_string(), rsh_entry);
@@ -71,29 +70,41 @@ fn install_session_hook(project_root: &std::path::Path) {
     let mut settings = read_json_file(&settings_path);
 
     let Some(root) = settings.as_object_mut() else {
-        eprintln!("error: {} must contain a JSON object", settings_path.display());
+        eprintln!(
+            "error: {} must contain a JSON object",
+            settings_path.display()
+        );
         std::process::exit(1);
     };
     let hooks = root.entry("hooks").or_insert_with(|| json!({}));
     let Some(hooks) = hooks.as_object_mut() else {
-        eprintln!("error: hooks in {} must be a JSON object", settings_path.display());
+        eprintln!(
+            "error: hooks in {} must be a JSON object",
+            settings_path.display()
+        );
         std::process::exit(1);
     };
     let session_start = hooks.entry("SessionStart").or_insert_with(|| json!([]));
     let Some(arr) = session_start.as_array_mut() else {
-        eprintln!("error: SessionStart in {} must be an array", settings_path.display());
+        eprintln!(
+            "error: SessionStart in {} must be an array",
+            settings_path.display()
+        );
         std::process::exit(1);
     };
 
     // Dedup: don't add a second hook if one already exists
     let already_exists = arr.iter().any(|entry| {
-        entry.get("hooks").and_then(|h| h.as_array()).is_some_and(|hooks_arr| {
-            hooks_arr.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|c| c.as_str())
-                    .is_some_and(|c| c.contains("rsh --prime"))
+        entry
+            .get("hooks")
+            .and_then(|h| h.as_array())
+            .is_some_and(|hooks_arr| {
+                hooks_arr.iter().any(|hook| {
+                    hook.get("command")
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c.contains("rsh --prime"))
+                })
             })
-        })
     });
 
     if !already_exists {
@@ -107,11 +118,7 @@ fn install_session_hook(project_root: &std::path::Path) {
     eprintln!("  SessionStart hook: {}", settings_path.display());
 }
 
-pub fn install_claude(
-    working_dir: Option<&str>,
-    allow_redirects: bool,
-    inherit_env: bool,
-) {
+pub fn install_claude(working_dir: Option<&str>, allow_redirects: bool, inherit_env: bool) {
     let start_dir = crate::resolve_working_dir(working_dir);
     let project_root = crate::find_git_root(&start_dir).unwrap_or(start_dir);
 

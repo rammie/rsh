@@ -25,10 +25,7 @@ fn test_and_or_now_supported() {
 #[test]
 fn test_or_operator() {
     // || executes second command only if first fails
-    let output = rsh_bin()
-        .arg("false || echo fallback")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("false || echo fallback").output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -189,10 +186,7 @@ fn test_function_definition_rejected() {
 #[test]
 fn test_background_execution_rejected() {
     // sleep isn't in the allowlist, but & should be rejected at the syntax level first
-    let output = rsh_bin()
-        .arg("echo hello &")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello &").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("background"), "stderr was: {}", stderr);

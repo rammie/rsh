@@ -439,10 +439,7 @@ fn test_stderr_to_dev_null_on_non_final_pipeline_allowed() {
 
 #[test]
 fn test_fd_dup_on_non_final_pipeline_allowed() {
-    let output = rsh_bin()
-        .arg("echo hello 2>&1 | head -1")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello 2>&1 | head -1").output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -1218,10 +1215,7 @@ fn test_output_and_error_redirect_append() {
 
 #[test]
 fn test_output_and_error_redirect_blocked_without_flag() {
-    let output = rsh_bin()
-        .arg("echo hello &> out.txt")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello &> out.txt").output().unwrap();
     assert!(
         !output.status.success(),
         "&> should be blocked without --allow-redirects"
@@ -1236,10 +1230,7 @@ fn test_output_and_error_redirect_blocked_without_flag() {
 
 #[test]
 fn test_output_and_error_redirect_to_dev_null_allowed() {
-    let output = rsh_bin()
-        .arg("echo hello &> /dev/null")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo hello &> /dev/null").output().unwrap();
     assert!(
         output.status.success(),
         "&> /dev/null should be allowed without --allow-redirects, stderr: {}",
@@ -1270,10 +1261,7 @@ fn test_output_and_error_redirect_path_traversal_blocked() {
 #[test]
 fn test_flag_embedded_absolute_path_blocked() {
     // --file=/etc/passwd should be caught even though it starts with -
-    let output = rsh_bin()
-        .arg("grep --file=/etc/passwd .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("grep --file=/etc/passwd .").output().unwrap();
     assert!(
         !output.status.success(),
         "flag-embedded absolute path should be blocked"
@@ -1493,11 +1481,7 @@ fn test_redirect_path_traversal_rejected() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("path traversal"),
-        "stderr was: {}",
-        stderr
-    );
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
 
 #[test]
@@ -1525,11 +1509,7 @@ fn test_output_and_error_redirect_traversal_blocked() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("path traversal"),
-        "stderr was: {}",
-        stderr
-    );
+    assert!(stderr.contains("path traversal"), "stderr was: {}", stderr);
 }
 
 // --- Fix #2: Substring offset/length validation ---
@@ -1665,10 +1645,7 @@ fn test_exit_status_and_chain() {
 #[test]
 fn test_exit_status_pipeline() {
     // Test that $? reflects the last pipeline's exit code
-    let output = rsh_bin()
-        .arg("false; true; echo $?")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("false; true; echo $?").output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert_eq!(
@@ -1687,7 +1664,11 @@ fn test_exit_status_in_for_loop() {
         .unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "1", "$? should be 1 after false in loop body");
+    assert_eq!(
+        stdout.trim(),
+        "1",
+        "$? should be 1 after false in loop body"
+    );
 }
 
 // --- Arithmetic expression validation ---
@@ -1794,10 +1775,7 @@ fn test_concatenated_flag_rg_pattern_file_blocked() {
 #[test]
 fn test_concatenated_flag_file_command_blocked() {
     // file -f../../etc/passwd — reads filenames from arbitrary file
-    let output = rsh_bin()
-        .arg("file -f../../etc/passwd")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("file -f../../etc/passwd").output().unwrap();
     assert!(
         !output.status.success(),
         "file -f with path traversal should be blocked"
@@ -1846,10 +1824,7 @@ fn test_concatenated_flag_with_number_allowed() {
 fn test_concatenated_flag_relative_path_allowed() {
     // grep -f with a relative path (no traversal) should be allowed
     // Use a file with a simple pattern that won't cause regex errors
-    let tmp = std::env::temp_dir().join(format!(
-        "rsh_test_flag_relpath_{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("rsh_test_flag_relpath_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     std::fs::write(tmp.join("patterns.txt"), "name\n").unwrap();
     std::fs::write(tmp.join("data.txt"), "name = rsh\nversion = 1\n").unwrap();
@@ -1944,10 +1919,7 @@ fn test_stderr_merge_to_stdout_on_non_final_pipeline() {
 #[test]
 fn test_find_delete_blocked_via_command_substitution() {
     // Critical: $(echo -delete) should not bypass blocked flag check
-    let output = rsh_bin()
-        .arg("find . $(echo -delete)")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("find . $(echo -delete)").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2102,10 +2074,7 @@ fn test_interpreters_not_in_allowlist() {
 fn test_fd_exec_blocked_via_combined_flags() {
     // fd -Hx is parsed by fd as -H -x, which is the blocked -x/--exec flag.
     // Must be caught even though the arg "-Hx" doesn't exactly equal "-x".
-    let output = rsh_bin()
-        .arg("fd -Hx echo {} .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("fd -Hx echo {} .").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2118,10 +2087,7 @@ fn test_fd_exec_blocked_via_combined_flags() {
 #[test]
 fn test_fd_exec_batch_blocked_via_combined_flags() {
     // fd -HX is parsed by fd as -H -X (--exec-batch), must be caught.
-    let output = rsh_bin()
-        .arg("fd -HX echo {} .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("fd -HX echo {} .").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2134,10 +2100,7 @@ fn test_fd_exec_batch_blocked_via_combined_flags() {
 #[test]
 fn test_fd_exec_blocked_via_three_combined_flags() {
     // fd -HIx: three combined flags, -x is the blocked one
-    let output = rsh_bin()
-        .arg("fd -HIx echo {} .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("fd -HIx echo {} .").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2182,10 +2145,7 @@ fn test_sort_output_blocked_via_three_combined_flags() {
 #[test]
 fn test_fd_exec_blocked_at_start_of_combined_flags() {
     // fd -xH: blocked flag -x appears at the START of the cluster, not the end
-    let output = rsh_bin()
-        .arg("fd -xH echo {} .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("fd -xH echo {} .").output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2198,10 +2158,7 @@ fn test_fd_exec_blocked_at_start_of_combined_flags() {
 #[test]
 fn test_fd_standalone_flags_still_allowed() {
     // fd -H (hidden) without -x should still be allowed
-    let output = rsh_bin()
-        .arg("fd -H . .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("fd -H . .").output().unwrap();
     // May fail for other reasons (fd not installed, etc.) but should NOT fail
     // with "not allowed" for blocked flags
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2229,10 +2186,7 @@ fn test_sort_non_blocked_combined_flags_allowed() {
 #[test]
 fn test_combined_flag_check_skips_long_flags() {
     // --sort should not trigger the combined-flag check (it's a long flag, not a cluster)
-    let output = rsh_bin()
-        .arg("ls --sort=size .")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("ls --sort=size .").output().unwrap();
     // ls --sort=size is fine, it's a legitimate long flag
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2245,10 +2199,7 @@ fn test_combined_flag_check_skips_long_flags() {
 #[test]
 fn test_combined_flag_check_skips_flags_with_values() {
     // sort -t: should not trigger the combined flag check (has non-alpha char ':')
-    let output = rsh_bin()
-        .arg("echo 'a:b:c' | sort -t:")
-        .output()
-        .unwrap();
+    let output = rsh_bin().arg("echo 'a:b:c' | sort -t:").output().unwrap();
     assert!(
         output.status.success(),
         "sort -t: should not be blocked, stderr: {}",
@@ -2269,34 +2220,21 @@ fn test_expanded_command_name_blocked() {
     // The raw "$cmd" is not in the allowlist, so validation rejects it
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not in allowlist"),
-        "stderr: {}",
-        stderr
-    );
+    assert!(stderr.contains("not in allowlist"), "stderr: {}", stderr);
 }
 
 // --- Restricted sed builtin ---
 
 #[test]
 fn test_sed_single_line() {
-    let out = rsh_bin()
-        .arg("sed -n '1p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '1p' Cargo.toml").output().unwrap();
     assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        "[package]"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[package]");
 }
 
 #[test]
 fn test_sed_line_range() {
-    let out = rsh_bin()
-        .arg("sed -n '2,4p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '2,4p' Cargo.toml").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -2306,10 +2244,7 @@ fn test_sed_line_range() {
 
 #[test]
 fn test_sed_last_line() {
-    let out = rsh_bin()
-        .arg("sed -n '$p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '$p' Cargo.toml").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!stdout.trim().is_empty());
@@ -2317,10 +2252,7 @@ fn test_sed_last_line() {
 
 #[test]
 fn test_sed_range_to_last() {
-    let out = rsh_bin()
-        .arg("sed -n '1,2p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '1,2p' Cargo.toml").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -2353,10 +2285,7 @@ fn test_sed_pipeline_to_grep() {
 
 #[test]
 fn test_sed_multiple_expressions() {
-    let out = rsh_bin()
-        .arg("sed -n '1p;3p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '1p;3p' Cargo.toml").output().unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().collect();
@@ -2377,10 +2306,7 @@ fn test_sed_multiple_e_flags() {
 
 #[test]
 fn test_sed_no_n_flag_rejected() {
-    let out = rsh_bin()
-        .arg("sed '1p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed '1p' Cargo.toml").output().unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("requires -n"));
@@ -2388,10 +2314,7 @@ fn test_sed_no_n_flag_rejected() {
 
 #[test]
 fn test_sed_i_flag_rejected() {
-    let out = rsh_bin()
-        .arg("sed -n -i '1p' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n -i '1p' Cargo.toml").output().unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unsupported sed flag"));
@@ -2400,10 +2323,7 @@ fn test_sed_i_flag_rejected() {
 #[test]
 fn test_sed_e_command_rejected() {
     // The dangerous 'e' command (execute) must be rejected
-    let out = rsh_bin()
-        .arg("sed -n '1e' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '1e' Cargo.toml").output().unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -2415,10 +2335,7 @@ fn test_sed_e_command_rejected() {
 
 #[test]
 fn test_sed_d_command_rejected() {
-    let out = rsh_bin()
-        .arg("sed -n '1d' Cargo.toml")
-        .output()
-        .unwrap();
+    let out = rsh_bin().arg("sed -n '1d' Cargo.toml").output().unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unsupported sed command"));
@@ -2468,10 +2385,7 @@ fn test_sed_in_command_substitution() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
-        "[package]"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[package]");
 }
 
 #[test]
@@ -2804,7 +2718,11 @@ fn test_install_claude_finds_git_root_from_subdir() {
         .arg(subdir.to_str().unwrap())
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // Both files should be at git root, not in subdir
     assert!(tmp.join(".mcp.json").exists());
@@ -3005,10 +2923,7 @@ fn test_multiple_redirects_sequential() {
 #[test]
 fn test_multi_arg_simple() {
     // rsh echo hello world (multiple OS args instead of single string)
-    let output = rsh_bin()
-        .args(["echo", "hello", "world"])
-        .output()
-        .unwrap();
+    let output = rsh_bin().args(["echo", "hello", "world"]).output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -3035,10 +2950,7 @@ fn test_multi_arg_with_flags() {
 #[test]
 fn test_multi_arg_with_special_chars() {
     // rsh echo "hello world" (arg with spaces gets quoted)
-    let output = rsh_bin()
-        .args(["echo", "hello world"])
-        .output()
-        .unwrap();
+    let output = rsh_bin().args(["echo", "hello world"]).output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -3053,37 +2965,25 @@ fn test_multi_arg_with_special_chars() {
 #[test]
 fn test_double_dash_simple() {
     // rsh -- echo hello
-    let output = rsh_bin()
-        .args(["--", "echo", "hello"])
-        .output()
-        .unwrap();
+    let output = rsh_bin().args(["--", "echo", "hello"]).output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "hello"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
 }
 
 #[test]
 fn test_double_dash_with_rsh_flag_like_arg() {
     // rsh -- echo --help (--help should be passed to echo, not rsh)
-    let output = rsh_bin()
-        .args(["--", "echo", "--help"])
-        .output()
-        .unwrap();
+    let output = rsh_bin().args(["--", "echo", "--help"]).output().unwrap();
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "--help"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "--help");
 }
 
 #[test]
@@ -3098,10 +2998,7 @@ fn test_double_dash_with_options_before() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout).trim(),
-        "hello"
-    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
 }
 
 #[test]
@@ -3110,11 +3007,7 @@ fn test_double_dash_empty_error() {
     let output = rsh_bin().args(["--"]).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("no command after --"),
-        "stderr: {}",
-        stderr
-    );
+    assert!(stderr.contains("no command after --"), "stderr: {}", stderr);
 }
 
 #[test]
@@ -3141,9 +3034,5 @@ fn test_multi_arg_disallowed_command() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not in allowlist"),
-        "stderr: {}",
-        stderr
-    );
+    assert!(stderr.contains("not in allowlist"), "stderr: {}", stderr);
 }

@@ -94,17 +94,25 @@ Patterns for multi-step reads:\n"
     );
 
     if has_rg {
-        s.push_str("  rg \"pattern\" -t rust -C 3                # search by content + file type\n");
+        s.push_str(
+            "  rg \"pattern\" -t rust -C 3                # search by content + file type\n",
+        );
         s.push_str("  rg \"pattern\" -g \"*.ts\" .               # search with glob filter (NOT --include)\n");
         s.push_str("  rg \"pattern\" -l .                        # list matching files only\n");
     }
-    s.push_str("  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type\n");
+    s.push_str(
+        "  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type\n",
+    );
     if has_fd {
         s.push_str("  fd -e rs | head -20                        # find files by extension\n");
     }
-    s.push_str("  tree -L 2 .                                    # overview of directory structure\n");
+    s.push_str(
+        "  tree -L 2 .                                    # overview of directory structure\n",
+    );
     s.push_str("  grep pattern $(find . -name \"*.rs\")          # find by name, then search\n");
-    s.push_str("  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect\n");
+    s.push_str(
+        "  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect\n",
+    );
 
     s.push_str(
         "\
@@ -166,7 +174,13 @@ pub fn parse_and_execute(
         return Output::error("empty input".to_string());
     }
 
-    let executor = Executor::new(allowlist, working_dir, allow_redirects, max_output, inherit_env);
+    let executor = Executor::new(
+        allowlist,
+        working_dir,
+        allow_redirects,
+        max_output,
+        inherit_env,
+    );
     executor.execute(&program)
 }
 
@@ -290,9 +304,14 @@ fn main() {
     }
 
     match install_target.as_deref() {
-        Some("claude") => install::install_claude(working_dir.as_deref(), allow_redirects, inherit_env),
+        Some("claude") => {
+            install::install_claude(working_dir.as_deref(), allow_redirects, inherit_env)
+        }
         Some(target) => {
-            eprintln!("error: unknown install target '{}' (supported: claude)", target);
+            eprintln!(
+                "error: unknown install target '{}' (supported: claude)",
+                target
+            );
             std::process::exit(2);
         }
         None => {}

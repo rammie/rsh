@@ -4,7 +4,7 @@
 /// that runs commands through the parse→validate→execute pipeline.
 use std::io::{BufRead, Write};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::allowlist::Allowlist;
 
@@ -17,10 +17,13 @@ fn rpc_error(id: &Option<Value>, code: i32, message: &str) -> Value {
 }
 
 fn tool_response(id: &Option<Value>, text: String, is_error: bool) -> Value {
-    rpc_result(id, json!({
-        "content": [{ "type": "text", "text": text }],
-        "isError": is_error
-    }))
+    rpc_result(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": text }],
+            "isError": is_error
+        }),
+    )
 }
 
 /// Run the MCP stdio server. Reads JSON-RPC from stdin, writes responses to stdout.
@@ -68,30 +71,36 @@ pub fn run_server(
         }
 
         let response = match method {
-            "initialize" => rpc_result(&id, json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": {
-                    "name": "rsh",
-                    "version": env!("CARGO_PKG_VERSION")
-                }
-            })),
-            "tools/list" => rpc_result(&id, json!({
-                "tools": [{
-                    "name": "rsh",
-                    "description": tool_description,
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "The shell command to run"
-                            }
-                        },
-                        "required": ["command"]
+            "initialize" => rpc_result(
+                &id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": {
+                        "name": "rsh",
+                        "version": env!("CARGO_PKG_VERSION")
                     }
-                }]
-            })),
+                }),
+            ),
+            "tools/list" => rpc_result(
+                &id,
+                json!({
+                    "tools": [{
+                        "name": "rsh",
+                        "description": tool_description,
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "command": {
+                                    "type": "string",
+                                    "description": "The shell command to run"
+                                }
+                            },
+                            "required": ["command"]
+                        }
+                    }]
+                }),
+            ),
             "tools/call" => handle_tools_call(
                 &id,
                 msg.get("params"),

@@ -8,9 +8,9 @@
 /// - Rejection of function definitions, background (&), and process substitution
 use std::collections::HashSet;
 
+use brush_parser::ParserOptions;
 use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
-use brush_parser::ParserOptions;
 
 use crate::allowlist::{self, Allowlist};
 
@@ -297,8 +297,7 @@ impl<'a> ValidatorContext<'a> {
     /// strings inside parameter expansions.
     fn validate_word_str(&self, s: &str) -> Result<(), String> {
         let opts = ParserOptions::default();
-        let pieces =
-            word::parse(s, &opts).map_err(|e| format!("word parse error: {}", e))?;
+        let pieces = word::parse(s, &opts).map_err(|e| format!("word parse error: {}", e))?;
         for piece_with_source in &pieces {
             self.validate_word_piece(&piece_with_source.piece)?;
         }
@@ -373,9 +372,7 @@ impl<'a> ValidatorContext<'a> {
                 parameter
             }
             ParameterExpr::AssignDefaultValues { .. } => {
-                return Err(
-                    "variable assignment via ${var:=default} is not allowed".to_string(),
-                );
+                return Err("variable assignment via ${var:=default} is not allowed".to_string());
             }
             ParameterExpr::IndicateErrorIfNullOrUnset {
                 parameter,
@@ -434,7 +431,9 @@ impl<'a> ValidatorContext<'a> {
                 return Err("variable name expansion (${!prefix@}) is not supported".to_string());
             }
             ParameterExpr::MemberKeys { .. } => {
-                return Err("associative array key expansion (${!name[@]}) is not supported".to_string());
+                return Err(
+                    "associative array key expansion (${!name[@]}) is not supported".to_string(),
+                );
             }
         };
 
@@ -667,10 +666,7 @@ pub fn check_arg_path_safety(arg: &str) -> Result<(), String> {
 /// Check a path string for absolute paths and path traversal.
 fn check_path_value(value: &str) -> Result<(), String> {
     if value.starts_with('/') {
-        return Err(format!(
-            "absolute path '{}' in argument not allowed",
-            value
-        ));
+        return Err(format!("absolute path '{}' in argument not allowed", value));
     }
     if value.split('/').any(|seg| seg == "..") {
         return Err(format!(

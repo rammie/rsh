@@ -4,9 +4,9 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
+use brush_parser::ParserOptions;
 use brush_parser::ast::*;
 use brush_parser::word::{self, Parameter, ParameterExpr, WordPiece};
-use brush_parser::ParserOptions;
 
 use crate::allowlist::{self, Allowlist};
 use crate::glob as rsh_glob;
@@ -988,9 +988,10 @@ impl Executor {
                 Ok(local_vars.get(name.as_str()).cloned().unwrap_or_default())
             }
             Parameter::Special(sp) => match sp {
-                word::SpecialParameter::LastExitStatus => {
-                    Ok(local_vars.get("?").cloned().unwrap_or_else(|| "0".to_string()))
-                }
+                word::SpecialParameter::LastExitStatus => Ok(local_vars
+                    .get("?")
+                    .cloned()
+                    .unwrap_or_else(|| "0".to_string())),
                 word::SpecialParameter::ProcessId => Ok(std::process::id().to_string()),
                 _ => Ok(String::new()),
             },

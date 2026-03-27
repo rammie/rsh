@@ -75,7 +75,11 @@ fn tools_call_msg(id: u64, command: &str) -> serde_json::Value {
 #[test]
 fn test_mcp_initialize_handshake() {
     let responses = mcp_session(&[initialize_msg(), initialized_notification()]);
-    assert_eq!(responses.len(), 1, "notification should not produce a response");
+    assert_eq!(
+        responses.len(),
+        1,
+        "notification should not produce a response"
+    );
 
     let resp = &responses[0];
     assert_eq!(resp["id"], 1);
@@ -86,7 +90,11 @@ fn test_mcp_initialize_handshake() {
 
 #[test]
 fn test_mcp_tools_list() {
-    let responses = mcp_session(&[initialize_msg(), initialized_notification(), tools_list_msg(2)]);
+    let responses = mcp_session(&[
+        initialize_msg(),
+        initialized_notification(),
+        tools_list_msg(2),
+    ]);
     assert_eq!(responses.len(), 2);
 
     let resp = &responses[1];
@@ -135,7 +143,11 @@ fn test_mcp_tool_execution_rejected_command() {
     assert_eq!(resp["id"], 2);
     assert_eq!(resp["result"]["isError"], true);
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("not in allowlist"), "expected rejection, got: {}", text);
+    assert!(
+        text.contains("not in allowlist"),
+        "expected rejection, got: {}",
+        text
+    );
 }
 
 #[test]
@@ -164,9 +176,24 @@ fn test_mcp_multiple_calls() {
     ]);
     assert_eq!(responses.len(), 4); // 1 init + 3 calls
 
-    assert!(responses[1]["result"]["content"][0]["text"].as_str().unwrap().contains("first"));
-    assert!(responses[2]["result"]["content"][0]["text"].as_str().unwrap().contains("second"));
-    assert!(responses[3]["result"]["content"][0]["text"].as_str().unwrap().contains("third"));
+    assert!(
+        responses[1]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("first")
+    );
+    assert!(
+        responses[2]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("second")
+    );
+    assert!(
+        responses[3]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("third")
+    );
 }
 
 #[test]
@@ -183,38 +210,38 @@ fn test_mcp_ping() {
 
 #[test]
 fn test_mcp_unknown_method() {
-    let responses = mcp_session(&[
-        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "unknown/method"}),
-    ]);
+    let responses =
+        mcp_session(&[serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "unknown/method"})]);
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["error"]["code"], -32601);
-    assert!(responses[0]["error"]["message"].as_str().unwrap().contains("not found"));
+    assert!(
+        responses[0]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not found")
+    );
 }
 
 #[test]
 fn test_mcp_missing_command_argument() {
-    let responses = mcp_session(&[
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": { "name": "rsh", "arguments": {} }
-        }),
-    ]);
+    let responses = mcp_session(&[serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "rsh", "arguments": {} }
+    })]);
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["error"]["code"], -32602);
 }
 
 #[test]
 fn test_mcp_unknown_tool_name() {
-    let responses = mcp_session(&[
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": { "name": "not_rsh", "arguments": { "command": "echo hi" } }
-        }),
-    ]);
+    let responses = mcp_session(&[serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "not_rsh", "arguments": { "command": "echo hi" } }
+    })]);
     assert_eq!(responses.len(), 1);
     assert_eq!(responses[0]["error"]["code"], -32602);
 }
@@ -272,7 +299,11 @@ fn test_install_claude_merges_existing_mcp_servers() {
         .arg(&tmpdir)
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let content = std::fs::read_to_string(tmpdir.join(".mcp.json")).unwrap();
     let config: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -298,7 +329,11 @@ fn test_install_claude_with_flags() {
         .arg(&tmpdir)
         .output()
         .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let content = std::fs::read_to_string(tmpdir.join(".mcp.json")).unwrap();
     let config: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -313,10 +348,7 @@ fn test_install_claude_with_flags() {
 
 #[test]
 fn test_install_unknown_target() {
-    let output = rsh_bin()
-        .args(["--install", "unknown"])
-        .output()
-        .unwrap();
+    let output = rsh_bin().args(["--install", "unknown"]).output().unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown install target"));

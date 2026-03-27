@@ -44,9 +44,8 @@ fn parse_regex_addr(s: &str) -> Result<(Regex, &str), String> {
             } else {
                 pattern.into()
             };
-            let re = Regex::new(&unescaped).map_err(|e| {
-                format!("invalid regex '{}': {}", pattern, e)
-            })?;
+            let re = Regex::new(&unescaped)
+                .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
             let rest = &inner[i + 1..];
             return Ok((re, rest));
         }
@@ -90,10 +89,7 @@ fn parse_expr(s: &str) -> Result<Addr, String> {
         // Validate inverted line-number ranges.
         if let (AddrSpec::Line(a), AddrSpec::Line(b)) = (&first, &second) {
             if b < a {
-                return Err(format!(
-                    "inverted range {},{} — start must be <= end",
-                    a, b
-                ));
+                return Err(format!("inverted range {},{} — start must be <= end", a, b));
             }
         }
 
@@ -245,7 +241,11 @@ fn max_fixed_line(exprs: &[Addr]) -> Option<usize> {
 }
 
 /// Execute the restricted sed builtin. Returns (stdout, stderr, exit_code).
-pub fn execute(args: &[String], working_dir: &Path, stdin_data: Option<&str>) -> (String, String, i32) {
+pub fn execute(
+    args: &[String],
+    working_dir: &Path,
+    stdin_data: Option<&str>,
+) -> (String, String, i32) {
     let (exprs, files) = match parse_args(args) {
         Ok(v) => v,
         Err(e) => return (String::new(), format!("sed: {}\n", e), 1),
@@ -396,13 +396,19 @@ mod tests {
     #[test]
     fn test_parse_range() {
         let addr = parse_expr("10,20p").unwrap();
-        assert!(matches!(addr, Addr::Range(AddrSpec::Line(10), AddrSpec::Line(20))));
+        assert!(matches!(
+            addr,
+            Addr::Range(AddrSpec::Line(10), AddrSpec::Line(20))
+        ));
     }
 
     #[test]
     fn test_parse_range_to_last() {
         let addr = parse_expr("5,$p").unwrap();
-        assert!(matches!(addr, Addr::Range(AddrSpec::Line(5), AddrSpec::Last)));
+        assert!(matches!(
+            addr,
+            Addr::Range(AddrSpec::Line(5), AddrSpec::Last)
+        ));
     }
 
     #[test]
@@ -414,19 +420,28 @@ mod tests {
     #[test]
     fn test_parse_regex_range() {
         let addr = parse_expr("/start/,/end/p").unwrap();
-        assert!(matches!(addr, Addr::Range(AddrSpec::Pattern(_), AddrSpec::Pattern(_))));
+        assert!(matches!(
+            addr,
+            Addr::Range(AddrSpec::Pattern(_), AddrSpec::Pattern(_))
+        ));
     }
 
     #[test]
     fn test_parse_mixed_line_regex_range() {
         let addr = parse_expr("5,/end/p").unwrap();
-        assert!(matches!(addr, Addr::Range(AddrSpec::Line(5), AddrSpec::Pattern(_))));
+        assert!(matches!(
+            addr,
+            Addr::Range(AddrSpec::Line(5), AddrSpec::Pattern(_))
+        ));
     }
 
     #[test]
     fn test_parse_mixed_regex_line_range() {
         let addr = parse_expr("/start/,10p").unwrap();
-        assert!(matches!(addr, Addr::Range(AddrSpec::Pattern(_), AddrSpec::Line(10))));
+        assert!(matches!(
+            addr,
+            Addr::Range(AddrSpec::Pattern(_), AddrSpec::Line(10))
+        ));
     }
 
     #[test]
@@ -508,7 +523,14 @@ mod tests {
 
     #[test]
     fn test_parse_args_multiple_e() {
-        let args: Vec<String> = vec!["-n".into(), "-e".into(), "5p".into(), "-e".into(), "10p".into(), "f.txt".into()];
+        let args: Vec<String> = vec![
+            "-n".into(),
+            "-e".into(),
+            "5p".into(),
+            "-e".into(),
+            "10p".into(),
+            "f.txt".into(),
+        ];
         let (exprs, files) = parse_args(&args).unwrap();
         assert_eq!(exprs.len(), 2);
         assert_eq!(files, vec!["f.txt"]);
@@ -613,18 +635,14 @@ mod tests {
 
     #[test]
     fn test_file_path_safety_absolute() {
-        let args = &[
-            "-n".into(), "1p".into(), "/etc/passwd".into(),
-        ];
+        let args = &["-n".into(), "1p".into(), "/etc/passwd".into()];
         let (_, _, exit) = execute(args, Path::new("."), None);
         assert_ne!(exit, 0);
     }
 
     #[test]
     fn test_file_path_safety_traversal() {
-        let args = &[
-            "-n".into(), "1p".into(), "../secret".into(),
-        ];
+        let args = &["-n".into(), "1p".into(), "../secret".into()];
         let (_, stderr, exit) = execute(args, Path::new("."), None);
         assert_ne!(exit, 0);
         assert!(stderr.contains("path traversal"));

@@ -1,6 +1,6 @@
 [package]
 name = "rsh"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Restricted shell for AI agents — safe, auditable command execution"
 

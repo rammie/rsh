@@ -37,8 +37,7 @@ pub struct Allowlist {
 impl Allowlist {
     /// Build the allowlist from the pinned defaults.
     pub fn new() -> Self {
-        let commands: HashSet<String> =
-            DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect();
+        let commands: HashSet<String> = DEFAULT_ALLOWLIST.iter().map(|s| s.to_string()).collect();
         Self { commands }
     }
 
