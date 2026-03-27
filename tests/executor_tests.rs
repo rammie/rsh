@@ -2815,26 +2815,6 @@ fn test_install_claude_finds_git_root_from_subdir() {
     std::fs::remove_dir_all(&tmp).unwrap();
 }
 
-#[test]
-fn test_prime_claude_redirects_to_install() {
-    let tmp = create_test_git_dir("prime_claude_compat");
-
-    let out = rsh_bin()
-        .arg("--dir")
-        .arg(tmp.to_str().unwrap())
-        .arg("--prime")
-        .arg("claude")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-    // Should produce both files just like --install claude
-    assert!(tmp.join(".mcp.json").exists());
-    assert!(tmp.join(".claude/settings.local.json").exists());
-
-    std::fs::remove_dir_all(&tmp).unwrap();
-}
-
 // --- Finding 1: --inherit-env strips dangerous library-injection vars ---
 
 #[test]

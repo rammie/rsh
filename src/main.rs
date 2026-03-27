@@ -222,13 +222,7 @@ fn main() {
                 install_target = Some(args[i].clone());
             }
             "--prime" => {
-                // Support legacy `--prime claude` by consuming the arg, but treat as `--install claude`
-                if i + 1 < args.len() && args[i + 1] == "claude" {
-                    i += 1;
-                    install_target = Some("claude".to_string());
-                } else {
-                    prime_mode = true;
-                }
+                prime_mode = true;
             }
             "--allow-redirects" => {
                 allow_redirects = true;

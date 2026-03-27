@@ -61,7 +61,7 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)
 - `--prime` flag outputs an LLM-ready description of capabilities
 - `--mcp` starts a stdio MCP server (JSON-RPC 2.0) exposing rsh as a tool. No external SDK — the protocol is implemented directly with `serde_json`
-- `--install claude` sets up rsh for Claude Code: registers MCP server in `.mcp.json` and installs a SessionStart hook in `.claude/settings.local.json`. `--prime claude` is a legacy alias for `--install claude`
+- `--install claude` sets up rsh for Claude Code: registers MCP server in `.mcp.json` and installs a SessionStart hook in `.claude/settings.local.json`
 - Symlink traversal is a non-goal: rsh restricts which commands can run and validates argument strings for path traversal, but does not prevent commands from following symlinks to files outside the working directory. The caller is responsible for ensuring the working directory does not contain symlinks to sensitive locations.
 - `--inherit-env` exposes all parent environment variables to child processes — including `printenv` and `env`, which are on the allowlist. Callers should be aware that sensitive env vars (tokens, secrets) will be readable. Library-injection vars (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`) are always stripped, even in `--inherit-env` mode.
 - `--allow-redirects` follows symlinks: if a file in the working directory is a symlink to an external path, `>` and `>>` will write through the symlink. This is consistent with the symlink non-goal above but has higher impact since redirects are write operations.
