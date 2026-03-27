@@ -1,6 +1,6 @@
 [package]
 name = "rsh"
-version = "0.0.7"
+version = "0.1.0"
 edition = "2024"
 description = "Restricted shell for AI agents — safe, auditable command execution"
 
@@ -9,6 +9,7 @@ glob = "0.3"
 os_pipe = "1"
 brush-parser = "=0.3.0"
 libc = "0.2"
+regex = "1"
 serde_json = "1"
 
 [dev-dependencies]

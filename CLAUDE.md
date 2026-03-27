@@ -30,7 +30,7 @@ Complex attack vectors are handled during execution as `rsh` handles command dis
 - **`sed.rs`** — Built-in restricted sed: only supports `-n` with address + `p` command for line extraction (e.g., `sed -n '10,20p' file`). No real sed binary is executed — this runs entirely in-process, eliminating the risk of sed's `e` (execute), `w` (write), and `s///e` features.
 - **`glob.rs`** — Glob expansion scoped to working directory with path traversal and absolute path guards.
 - **`mcp.rs`** — MCP (Model Context Protocol) stdio server. Implements JSON-RPC 2.0 over stdin/stdout, exposing a single `rsh` tool. Each `tools/call` runs the standard parse→validate→execute pipeline. Handles `initialize`, `tools/list`, `tools/call`, and `ping`.
-- **`install.rs`** — Handles `--install claude`: creates or merges `.mcp.json` at the project root with the rsh MCP server entry.
+- **`install.rs`** — Handles `--install claude`: registers the MCP server in `.mcp.json` and installs a SessionStart hook in `.claude/settings.local.json`.
 
 ## Security Model: Validator vs Executor
 
@@ -61,7 +61,7 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)
 - `--prime` flag outputs an LLM-ready description of capabilities
 - `--mcp` starts a stdio MCP server (JSON-RPC 2.0) exposing rsh as a tool. No external SDK — the protocol is implemented directly with `serde_json`
-- `--install claude` writes/merges `.mcp.json` at the project root to register the rsh MCP server
+- `--install claude` sets up rsh for Claude Code: registers MCP server in `.mcp.json` and installs a SessionStart hook in `.claude/settings.local.json`. `--prime claude` is a legacy alias for `--install claude`
 - Symlink traversal is a non-goal: rsh restricts which commands can run and validates argument strings for path traversal, but does not prevent commands from following symlinks to files outside the working directory. The caller is responsible for ensuring the working directory does not contain symlinks to sensitive locations.
 - `--inherit-env` exposes all parent environment variables to child processes — including `printenv` and `env`, which are on the allowlist. Callers should be aware that sensitive env vars (tokens, secrets) will be readable. Library-injection vars (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`) are always stripped, even in `--inherit-env` mode.
 - `--allow-redirects` follows symlinks: if a file in the working directory is a symlink to an external path, `>` and `>>` will write through the symlink. This is consistent with the symlink non-goal above but has higher impact since redirects are write operations.

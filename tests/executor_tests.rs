@@ -2607,7 +2607,7 @@ fn test_prime_still_works() {
     assert!(stdout.contains("Allowed commands:"));
 }
 
-// ---- --prime claude tests ----
+// ---- --install claude tests ----
 
 /// Create a temp dir with `.git` init'd, returning the path. Caller must clean up.
 fn create_test_git_dir(suffix: &str) -> std::path::PathBuf {
@@ -2616,12 +2616,10 @@ fn create_test_git_dir(suffix: &str) -> std::path::PathBuf {
     tmp
 }
 
-fn run_prime_claude(dir: &std::path::Path) -> std::process::Output {
+fn run_install_claude(dir: &std::path::Path) -> std::process::Output {
     let out = rsh_bin()
-        .arg("--dir")
+        .args(["--install", "claude", "--dir"])
         .arg(dir.to_str().unwrap())
-        .arg("--prime")
-        .arg("claude")
         .output()
         .unwrap();
     assert!(
@@ -2638,17 +2636,22 @@ fn read_settings(root: &std::path::Path) -> serde_json::Value {
 }
 
 #[test]
-fn test_prime_claude_creates_hook() {
-    let tmp = create_test_git_dir("prime_claude");
-    run_prime_claude(&tmp);
+fn test_install_claude_creates_both() {
+    let tmp = create_test_git_dir("install_claude_both");
+    run_install_claude(&tmp);
 
+    // Verify .mcp.json
+    let mcp_content = std::fs::read_to_string(tmp.join(".mcp.json")).unwrap();
+    let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+    assert_eq!(mcp["mcpServers"]["rsh"]["command"], "rsh");
+    let args = mcp["mcpServers"]["rsh"]["args"].as_array().unwrap();
+    assert!(args.iter().any(|a| a == "--mcp"));
+
+    // Verify SessionStart hook
     let settings_path = tmp.join(".claude/settings.local.json");
     assert!(settings_path.exists(), "settings.local.json should exist");
-
     let content = std::fs::read_to_string(&settings_path).unwrap();
     let settings: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-    // Verify structure
     let hooks = &settings["hooks"]["SessionStart"];
     assert!(hooks.is_array(), "SessionStart should be an array");
     let arr = hooks.as_array().unwrap();
@@ -2656,62 +2659,88 @@ fn test_prime_claude_creates_hook() {
     assert_eq!(arr[0]["hooks"][0]["command"], "rsh --prime");
     assert_eq!(arr[0]["hooks"][0]["type"], "command");
     assert_eq!(arr[0]["matcher"], "");
-
-    // Verify trailing newline
     assert!(content.ends_with('\n'));
 
     std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 #[test]
-fn test_prime_claude_idempotent() {
-    let tmp = create_test_git_dir("prime_claude_idem");
+fn test_install_claude_idempotent() {
+    let tmp = create_test_git_dir("install_claude_idem");
 
-    // Run twice
-    run_prime_claude(&tmp);
-    run_prime_claude(&tmp);
+    run_install_claude(&tmp);
+    run_install_claude(&tmp);
 
     let settings = read_settings(&tmp);
     let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
     assert_eq!(arr.len(), 1, "hook should not be duplicated");
 
+    let mcp_content = std::fs::read_to_string(tmp.join(".mcp.json")).unwrap();
+    let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+    let servers = mcp["mcpServers"].as_object().unwrap();
+    assert_eq!(servers.len(), 1, "should have exactly one server entry");
+
     std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 #[test]
-fn test_prime_claude_preserves_existing_settings() {
-    let tmp = create_test_git_dir("prime_claude_preserve");
+fn test_install_claude_preserves_existing_settings() {
+    let tmp = create_test_git_dir("install_claude_preserve");
     std::fs::create_dir_all(tmp.join(".claude")).unwrap();
 
-    // Write existing settings
     std::fs::write(
         tmp.join(".claude/settings.local.json"),
         r#"{"permissions": {"allow": ["echo"]}}"#,
     )
     .unwrap();
 
-    run_prime_claude(&tmp);
+    run_install_claude(&tmp);
 
     let settings = read_settings(&tmp);
-    // Existing settings preserved
     assert_eq!(settings["permissions"]["allow"][0], "echo");
-    // Hook added
     assert!(settings["hooks"]["SessionStart"].is_array());
 
     std::fs::remove_dir_all(&tmp).unwrap();
 }
 
 #[test]
-fn test_prime_claude_finds_git_root_from_subdir() {
-    let tmp = create_test_git_dir("prime_claude_subdir");
+fn test_install_claude_finds_git_root_from_subdir() {
+    let tmp = create_test_git_dir("install_claude_subdir");
     let subdir = tmp.join("src/deep");
     std::fs::create_dir_all(&subdir).unwrap();
 
-    run_prime_claude(&subdir);
+    let out = rsh_bin()
+        .args(["--install", "claude", "--dir"])
+        .arg(subdir.to_str().unwrap())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 
-    // Settings should be at git root, not in subdir
+    // Both files should be at git root, not in subdir
+    assert!(tmp.join(".mcp.json").exists());
     assert!(tmp.join(".claude/settings.local.json").exists());
+    assert!(!subdir.join(".mcp.json").exists());
     assert!(!subdir.join(".claude/settings.local.json").exists());
+
+    std::fs::remove_dir_all(&tmp).unwrap();
+}
+
+#[test]
+fn test_prime_claude_redirects_to_install() {
+    let tmp = create_test_git_dir("prime_claude_compat");
+
+    let out = rsh_bin()
+        .arg("--dir")
+        .arg(tmp.to_str().unwrap())
+        .arg("--prime")
+        .arg("claude")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // Should produce both files just like --install claude
+    assert!(tmp.join(".mcp.json").exists());
+    assert!(tmp.join(".claude/settings.local.json").exists());
 
     std::fs::remove_dir_all(&tmp).unwrap();
 }

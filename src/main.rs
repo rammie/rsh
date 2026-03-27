@@ -121,86 +121,6 @@ fn prime(al: &Allowlist, allow_redirects: bool) {
     std::process::exit(0);
 }
 
-fn prime_install_claude(working_dir: Option<&str>) {
-    let start_dir = resolve_working_dir(working_dir);
-    let project_root = find_git_root(&start_dir).unwrap_or(start_dir);
-
-    let claude_dir = project_root.join(".claude");
-    if let Err(e) = std::fs::create_dir_all(&claude_dir) {
-        eprintln!("error: failed to create .claude directory: {}", e);
-        std::process::exit(1);
-    }
-
-    let settings_path = claude_dir.join("settings.local.json");
-
-    // Read existing settings or start with empty object
-    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!(
-                "error: failed to parse {}: {}",
-                settings_path.display(),
-                e
-            );
-            std::process::exit(1);
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => {
-            eprintln!("error: failed to read {}: {}", settings_path.display(), e);
-            std::process::exit(1);
-        }
-    };
-
-    // Ensure hooks.SessionStart array exists
-    let hooks = settings
-        .as_object_mut()
-        .expect("settings must be an object")
-        .entry("hooks")
-        .or_insert_with(|| serde_json::json!({}));
-    let session_start = hooks
-        .as_object_mut()
-        .expect("hooks must be an object")
-        .entry("SessionStart")
-        .or_insert_with(|| serde_json::json!([]));
-    let arr = session_start
-        .as_array_mut()
-        .expect("SessionStart must be an array");
-
-    // Check for existing rsh --prime hook (dedup)
-    let already_exists = arr.iter().any(|entry| {
-        if let Some(hooks_arr) = entry.get("hooks").and_then(|h| h.as_array()) {
-            hooks_arr.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(|c| c.as_str())
-                    .map(|c| c.contains("rsh --prime"))
-                    .unwrap_or(false)
-            })
-        } else {
-            false
-        }
-    });
-
-    if !already_exists {
-        arr.push(serde_json::json!({
-            "matcher": "",
-            "hooks": [{"type": "command", "command": "rsh --prime"}]
-        }));
-    }
-
-    // Write back pretty-printed JSON
-    let json_str = serde_json::to_string_pretty(&settings).unwrap();
-    if let Err(e) = std::fs::write(&settings_path, format!("{}\n", json_str)) {
-        eprintln!("error: failed to write {}: {}", settings_path.display(), e);
-        std::process::exit(1);
-    }
-
-    if already_exists {
-        eprintln!("rsh hook already exists in {}", settings_path.display());
-    } else {
-        eprintln!("Installed rsh SessionStart hook in {}", settings_path.display());
-    }
-    std::process::exit(0);
-}
-
 pub fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut dir = if start.is_absolute() {
         start.to_path_buf()
@@ -258,9 +178,8 @@ fn usage() {
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
     eprintln!("  --dir <path>        Working directory (default: cwd)");
     eprintln!("  --mcp               Start MCP stdio server (JSON-RPC over stdin/stdout)");
-    eprintln!("  --install claude    Register rsh as an MCP server in .mcp.json");
+    eprintln!("  --install claude    Set up rsh for Claude Code (MCP server + SessionStart hook)");
     eprintln!("  --prime             Print an LLM-ready description of rsh's capabilities");
-    eprintln!("  --prime claude      Install rsh as a Claude Code SessionStart hook");
     eprintln!("  --version, -V       Print version");
     eprintln!("  --help              Show this help");
     eprintln!();
@@ -276,7 +195,7 @@ fn main() {
     let mut inherit_env = false;
     let mut working_dir: Option<String> = None;
     let mut command_string: Option<String> = None;
-    let mut prime_mode: Option<&str> = None; // None, Some("print"), or Some("claude")
+    let mut prime_mode = false;
     let mut mcp_mode = false;
     let mut install_target: Option<String> = None;
 
@@ -300,11 +219,12 @@ fn main() {
                 install_target = Some(args[i].clone());
             }
             "--prime" => {
+                // Support legacy `--prime claude` by consuming the arg, but treat as `--install claude`
                 if i + 1 < args.len() && args[i + 1] == "claude" {
                     i += 1;
-                    prime_mode = Some("claude");
+                    install_target = Some("claude".to_string());
                 } else {
-                    prime_mode = Some("print");
+                    prime_mode = true;
                 }
             }
             "--allow-redirects" => {
@@ -381,13 +301,9 @@ fn main() {
         None => {}
     }
 
-    match prime_mode {
-        Some("claude") => prime_install_claude(working_dir.as_deref()),
-        Some(_) => {
-            let al = Allowlist::new();
-            prime(&al, allow_redirects);
-        }
-        None => {}
+    if prime_mode {
+        let al = Allowlist::new();
+        prime(&al, allow_redirects);
     }
 
     let command_string = match command_string {
