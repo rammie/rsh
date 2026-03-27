@@ -29,6 +29,8 @@ Complex attack vectors are handled during execution as `rsh` handles command dis
 - **`executor.rs`** — Walks the validated AST, expands words (variables, globs, command substitution), wires pipes between pipeline stages, handles loops/conditionals, spawns processes with sanitized environment. **The executor is the security boundary for dynamic values** — it re-validates command names, checks expanded arguments for absolute paths and `..` traversal, re-checks blocked flags, and validates redirect targets, all post-expansion. Manages signal handling (SIGINT/SIGTERM) and output truncation.
 - **`sed.rs`** — Built-in restricted sed: only supports `-n` with address + `p` command for line extraction (e.g., `sed -n '10,20p' file`). No real sed binary is executed — this runs entirely in-process, eliminating the risk of sed's `e` (execute), `w` (write), and `s///e` features.
 - **`glob.rs`** — Glob expansion scoped to working directory with path traversal and absolute path guards.
+- **`mcp.rs`** — MCP (Model Context Protocol) stdio server. Implements JSON-RPC 2.0 over stdin/stdout, exposing a single `rsh` tool. Each `tools/call` runs the standard parse→validate→execute pipeline. Handles `initialize`, `tools/list`, `tools/call`, and `ping`.
+- **`install.rs`** — Handles `--install claude`: creates or merges `.mcp.json` at the project root with the rsh MCP server entry.
 
 ## Security Model: Validator vs Executor
 
@@ -44,6 +46,7 @@ This split exists because bash is a dynamic language — static analysis of the 
 - `tests/executor_tests.rs` — Integration tests that invoke the `rsh` binary via `Command` and check stdout/stderr/exit codes
 - `tests/integration_tests.rs` — More integration tests
 - `tests/parser_tests.rs` — Parser-level tests
+- `tests/mcp_tests.rs` — MCP protocol tests (handshake, tool execution, rejected commands, EOF exit) and install tests (create, merge, idempotent)
 
 Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 
@@ -57,6 +60,8 @@ Tests use `env!("CARGO_BIN_EXE_rsh")` to get the built binary path.
 - Environment sanitized by default (only `FORWARDED_VARS` like PATH, LANG forwarded to children; no env vars allowed in arguments)
 - Accepts `-c` flag for bash compatibility (`rsh -c "command"`)
 - `--prime` flag outputs an LLM-ready description of capabilities
+- `--mcp` starts a stdio MCP server (JSON-RPC 2.0) exposing rsh as a tool. No external SDK — the protocol is implemented directly with `serde_json`
+- `--install claude` writes/merges `.mcp.json` at the project root to register the rsh MCP server
 - Symlink traversal is a non-goal: rsh restricts which commands can run and validates argument strings for path traversal, but does not prevent commands from following symlinks to files outside the working directory. The caller is responsible for ensuring the working directory does not contain symlinks to sensitive locations.
 - `--inherit-env` exposes all parent environment variables to child processes — including `printenv` and `env`, which are on the allowlist. Callers should be aware that sensitive env vars (tokens, secrets) will be readable. Library-injection vars (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_INSERT_LIBRARIES`, `DYLD_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`) are always stripped, even in `--inherit-env` mode.
 - `--allow-redirects` follows symlinks: if a file in the working directory is a symlink to an external path, `>` and `>>` will write through the symlink. This is consistent with the symlink non-goal above but has higher impact since redirects are write operations.

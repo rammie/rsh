@@ -1,11 +1,13 @@
 mod allowlist;
 mod executor;
 mod glob;
+mod install;
+mod mcp;
 mod sed;
 mod validator;
 
 use allowlist::Allowlist;
-use executor::Executor;
+use executor::{Executor, Output};
 
 /// Join args into a single shell command string, quoting as needed.
 fn shell_join(args: &[String]) -> String {
@@ -36,12 +38,18 @@ fn has_command(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn prime(al: &Allowlist, allow_redirects: bool) {
+pub fn prime_text(al: &Allowlist, allow_redirects: bool) -> String {
     let cmds = al.allowed_commands().join(", ");
     let has_rg = has_command("rg");
     let has_fd = has_command("fd");
 
-    print!(
+    let redirect_note = if allow_redirects {
+        ""
+    } else {
+        "\n- File output redirects (> and >>)"
+    };
+
+    let mut s = format!(
         "\
 Use rsh for read-only shell operations. rsh works like bash but only permits specific commands.
 
@@ -79,48 +87,42 @@ Not allowed:
 - Instead of: find . | xargs grep pattern → use: grep -r pattern . OR grep pattern $(find . -name '*.ext')
 - Function definitions, background execution (&), process substitution{redirect_note}
 
-Patterns for multi-step reads:
-",
-        redirect_note = if allow_redirects {
-            ""
-        } else {
-            "\n- File output redirects (> and >>)"
-        },
-    );
-    if has_rg {
-        println!("  rg \"pattern\" -t rust -C 3                # search by content + file type");
-        println!("  rg \"pattern\" -g \"*.ts\" .               # search with glob filter (NOT --include)");
-        println!("  rg \"pattern\" -l .                        # list matching files only");
-    }
-    println!("  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type");
-    if has_fd {
-        println!("  fd -e rs | head -20                        # find files by extension");
-    }
-    println!("  tree -L 2 .                                    # overview of directory structure");
-    println!("  grep pattern $(find . -name \"*.rs\")          # find by name, then search");
-    println!(
-        "  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect"
+Patterns for multi-step reads:\n"
     );
 
-    print!(
+    if has_rg {
+        s.push_str("  rg \"pattern\" -t rust -C 3                # search by content + file type\n");
+        s.push_str("  rg \"pattern\" -g \"*.ts\" .               # search with glob filter (NOT --include)\n");
+        s.push_str("  rg \"pattern\" -l .                        # list matching files only\n");
+    }
+    s.push_str("  grep -rn \"pattern\" --include=\"*.rs\" .      # search by content + file type\n");
+    if has_fd {
+        s.push_str("  fd -e rs | head -20                        # find files by extension\n");
+    }
+    s.push_str("  tree -L 2 .                                    # overview of directory structure\n");
+    s.push_str("  grep pattern $(find . -name \"*.rs\")          # find by name, then search\n");
+    s.push_str("  for f in $(find . -name \"*.toml\"); do head -20 \"$f\"; done  # find, then inspect\n");
+
+    s.push_str(
         "\
 \nBehavior:
 - stdout, stderr, and exit codes work exactly like bash
 - Rejected commands print an error to stderr and exit 1
 - Environment is sanitized (PATH, LANG, etc. are forwarded to commands)
 - With --inherit-env, all parent environment variables are visible to commands (including printenv, env) — except LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT, DYLD_INSERT_LIBRARIES, DYLD_FRAMEWORK_PATH, and DYLD_LIBRARY_PATH, which are always stripped for security
-- With --allow-redirects, output redirects follow symlinks in the working directory
-"
+- With --allow-redirects, output redirects follow symlinks in the working directory\n"
     );
+
+    s
+}
+
+fn prime(al: &Allowlist, allow_redirects: bool) {
+    print!("{}", prime_text(al, allow_redirects));
     std::process::exit(0);
 }
 
 fn prime_install_claude(working_dir: Option<&str>) {
-    // Find project root by looking for .git directory
-    let start_dir = match working_dir {
-        Some(d) => std::path::PathBuf::from(d),
-        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    };
+    let start_dir = resolve_working_dir(working_dir);
     let project_root = find_git_root(&start_dir).unwrap_or(start_dir);
 
     let claude_dir = project_root.join(".claude");
@@ -199,7 +201,7 @@ fn prime_install_claude(working_dir: Option<&str>) {
     std::process::exit(0);
 }
 
-fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
+pub fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut dir = if start.is_absolute() {
         start.to_path_buf()
     } else {
@@ -215,6 +217,36 @@ fn find_git_root(start: &std::path::Path) -> Option<std::path::PathBuf> {
     }
 }
 
+pub fn resolve_working_dir(dir: Option<&str>) -> std::path::PathBuf {
+    match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    }
+}
+
+pub fn parse_and_execute(
+    command: &str,
+    allowlist: Allowlist,
+    working_dir: std::path::PathBuf,
+    allow_redirects: bool,
+    max_output: usize,
+    inherit_env: bool,
+) -> Output {
+    let reader = std::io::Cursor::new(command);
+    let mut parser = brush_parser::Parser::builder().reader(reader).build();
+    let program = match parser.parse_program() {
+        Ok(p) => p,
+        Err(e) => return Output::error(format!("parse error: {}", e)),
+    };
+
+    if program.complete_commands.is_empty() {
+        return Output::error("empty input".to_string());
+    }
+
+    let executor = Executor::new(allowlist, working_dir, allow_redirects, max_output, inherit_env);
+    executor.execute(&program)
+}
+
 fn usage() {
     eprintln!("Usage: rsh [OPTIONS] <COMMAND_STRING>");
     eprintln!("       rsh [OPTIONS] <COMMAND> [ARGS...]");
@@ -225,6 +257,8 @@ fn usage() {
     eprintln!("  --max-output <n>    Max output bytes (default: 10485760 = 10MB)");
     eprintln!("  --inherit-env       Inherit full parent environment (default: sanitized)");
     eprintln!("  --dir <path>        Working directory (default: cwd)");
+    eprintln!("  --mcp               Start MCP stdio server (JSON-RPC over stdin/stdout)");
+    eprintln!("  --install claude    Register rsh as an MCP server in .mcp.json");
     eprintln!("  --prime             Print an LLM-ready description of rsh's capabilities");
     eprintln!("  --prime claude      Install rsh as a Claude Code SessionStart hook");
     eprintln!("  --version, -V       Print version");
@@ -243,6 +277,8 @@ fn main() {
     let mut working_dir: Option<String> = None;
     let mut command_string: Option<String> = None;
     let mut prime_mode: Option<&str> = None; // None, Some("print"), or Some("claude")
+    let mut mcp_mode = false;
+    let mut install_target: Option<String> = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -251,6 +287,17 @@ fn main() {
             "--version" | "-V" => {
                 println!("rsh {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
+            }
+            "--mcp" => {
+                mcp_mode = true;
+            }
+            "--install" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("error: --install requires a target (e.g., 'claude')");
+                    std::process::exit(2);
+                }
+                install_target = Some(args[i].clone());
             }
             "--prime" => {
                 if i + 1 < args.len() && args[i + 1] == "claude" {
@@ -319,6 +366,21 @@ fn main() {
         i += 1;
     }
 
+    if mcp_mode {
+        let working_dir = resolve_working_dir(working_dir.as_deref());
+        mcp::run_server(allow_redirects, max_output, inherit_env, working_dir);
+        std::process::exit(0);
+    }
+
+    match install_target.as_deref() {
+        Some("claude") => install::install_claude(working_dir.as_deref(), allow_redirects, inherit_env),
+        Some(target) => {
+            eprintln!("error: unknown install target '{}' (supported: claude)", target);
+            std::process::exit(2);
+        }
+        None => {}
+    }
+
     match prime_mode {
         Some("claude") => prime_install_claude(working_dir.as_deref()),
         Some(_) => {
@@ -327,9 +389,6 @@ fn main() {
         }
         None => {}
     }
-
-    // Load pinned allowlist
-    let al = Allowlist::new();
 
     let command_string = match command_string {
         Some(s) => s,
@@ -340,31 +399,15 @@ fn main() {
         }
     };
 
-    let working_dir = match working_dir {
-        Some(d) => std::path::PathBuf::from(d),
-        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    };
-
-    // Parse using brush-parser
-    let reader = std::io::Cursor::new(&command_string);
-    let mut parser = brush_parser::Parser::builder().reader(reader).build();
-    let program = match parser.parse_program() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("rsh: parse error: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    // Check for empty program
-    if program.complete_commands.is_empty() {
-        eprintln!("rsh: empty input");
-        std::process::exit(1);
-    }
-
-    // Execute
-    let executor = Executor::new(al, working_dir, allow_redirects, max_output, inherit_env);
-    let output = executor.execute(&program);
+    let working_dir = resolve_working_dir(working_dir.as_deref());
+    let output = parse_and_execute(
+        &command_string,
+        Allowlist::new(),
+        working_dir,
+        allow_redirects,
+        max_output,
+        inherit_env,
+    );
     print!("{}", output.stdout);
     eprint!("{}", output.stderr);
     std::process::exit(output.exit_code);
