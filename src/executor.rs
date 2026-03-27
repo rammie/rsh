@@ -518,6 +518,7 @@ impl Executor {
         // expansion could change it (e.g., via variables).
         validator::check_command_allowed(&name, &self.allowlist)?;
 
+        let builtin = is_builtin(&name);
         let mut args = Vec::new();
         let mut redirects = Vec::new();
         let mut stderr_behavior = StderrBehavior::Capture;
@@ -529,8 +530,12 @@ impl Executor {
             match item {
                 CommandPrefixOrSuffixItem::Word(w) => {
                     let expanded = self.expand_word(w, local_vars)?;
-                    for arg in &expanded {
-                        self.check_expanded_arg_path(arg)?;
+                    // Builtins handle their own arg validation (e.g., sed
+                    // needs `/pattern/p` which contains `/` but isn't a path).
+                    if !builtin {
+                        for arg in &expanded {
+                            self.check_expanded_arg_path(arg)?;
+                        }
                     }
                     args.extend(expanded);
                 }

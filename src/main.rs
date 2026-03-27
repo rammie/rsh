@@ -79,6 +79,9 @@ sed (restricted — line extraction only):
 - sed -n '5,$p' file                             # print from line 5 to end
 - sed -n '1p;10,20p' file                        # multiple ranges
 - cat file | sed -n '1,5p'                       # works in pipelines
+- sed -n '/pattern/p' file                       # print lines matching regex
+- sed -n '/START/,/END/p' file                   # print from first match to second
+- sed -n '10,/pattern/p' file                    # mixed line number + regex range
 - Only -n flag and 'p' command are supported (no substitution, no -i, no scripting)
 
 Not allowed:

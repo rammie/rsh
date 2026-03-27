@@ -1,74 +1,122 @@
-/// Built-in restricted sed: only supports `-n` with address + `p` for line extraction.
+/// Built-in restricted sed: supports `-n` with address + `p` for line extraction.
 ///
 /// This is a safe reimplementation — no exec, no scripting, no file writes.
-/// Covers the primary LLM use case: `sed -n '10,20p' file`
+/// Supports line-number addresses (`sed -n '10,20p'`) and regex addresses
+/// (`sed -n '/pattern/p'`), including mixed ranges.
+use regex::Regex;
+use std::borrow::Cow;
 use std::io::BufRead;
 use std::path::Path;
 
+use crate::validator;
+
+/// A single address specification: line number, last line, or regex pattern.
+#[derive(Debug)]
+enum AddrSpec {
+    Line(usize),
+    Last,
+    Pattern(Regex),
+}
+
+/// A full address expression with command `p`.
 #[derive(Debug)]
 enum Addr {
-    /// Single line: `5p`
-    Line(usize),
-    /// Last line: `$p`
-    Last,
-    /// Range: `10,20p` or `5,$p`
-    Range(usize, RangeEnd),
+    Single(AddrSpec),
+    Range(AddrSpec, AddrSpec),
 }
 
-#[derive(Debug)]
-enum RangeEnd {
-    Line(usize),
-    Last,
+/// Try to parse a `/regex/` at the start of `s`. Returns (Regex, rest_of_string).
+fn parse_regex_addr(s: &str) -> Result<(Regex, &str), String> {
+    debug_assert!(s.starts_with('/'));
+    let inner = &s[1..];
+    // Find the closing `/`, handling `\/` escapes.
+    let mut i = 0;
+    let bytes = inner.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2; // skip escaped char
+            continue;
+        }
+        if bytes[i] == b'/' {
+            let pattern = &inner[..i];
+            let unescaped: Cow<str> = if pattern.contains("\\/") {
+                pattern.replace("\\/", "/").into()
+            } else {
+                pattern.into()
+            };
+            let re = Regex::new(&unescaped).map_err(|e| {
+                format!("invalid regex '{}': {}", pattern, e)
+            })?;
+            let rest = &inner[i + 1..];
+            return Ok((re, rest));
+        }
+        i += 1;
+    }
+    Err(format!("unterminated regex address '/{}'", inner))
 }
 
-/// Parse a single sed expression like "10p", "10,20p", "$p", "10,$p".
+/// Parse a single address spec (line number, `$`, or `/regex/`) from the front
+/// of `s`. Returns (AddrSpec, remaining_str).
+fn parse_addr_spec(s: &str) -> Result<(AddrSpec, &str), String> {
+    if s.starts_with('/') {
+        let (re, rest) = parse_regex_addr(s)?;
+        Ok((AddrSpec::Pattern(re), rest))
+    } else if s.starts_with('$') {
+        Ok((AddrSpec::Last, &s[1..]))
+    } else {
+        // Consume digits.
+        let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+        if end == 0 {
+            return Err(format!("expected address, got '{}'", s));
+        }
+        let n = parse_line_number(&s[..end])?;
+        Ok((AddrSpec::Line(n), &s[end..]))
+    }
+}
+
+/// Parse a single sed expression like "10p", "/pattern/p", "10,/end/p", etc.
 fn parse_expr(s: &str) -> Result<Addr, String> {
     let s = s.trim();
     if s.is_empty() {
         return Err("empty expression".to_string());
     }
 
-    // Must end with 'p'
-    if !s.ends_with('p') {
-        let cmd = s.chars().last().unwrap();
-        return Err(format!(
-            "unsupported sed command '{}' — only 'p' (print) is allowed",
-            cmd
-        ));
-    }
-    let addr_str = &s[..s.len() - 1];
+    let (first, rest) = parse_addr_spec(s)?;
 
-    if addr_str.is_empty() {
-        return Err("missing address — use e.g. '10p' or '10,20p'".to_string());
-    }
+    if let Some(rest) = rest.strip_prefix(',') {
+        // Range expression.
+        let (second, rest2) = parse_addr_spec(rest)?;
 
-    // Check for range
-    if let Some(comma_pos) = addr_str.find(',') {
-        let start_str = &addr_str[..comma_pos];
-        let end_str = &addr_str[comma_pos + 1..];
-
-        let start = parse_line_number(start_str)?;
-
-        let end = if end_str == "$" {
-            RangeEnd::Last
-        } else {
-            let end_num = parse_line_number(end_str)?;
-            if end_num < start {
+        // Validate inverted line-number ranges.
+        if let (AddrSpec::Line(a), AddrSpec::Line(b)) = (&first, &second) {
+            if b < a {
                 return Err(format!(
                     "inverted range {},{} — start must be <= end",
-                    start, end_num
+                    a, b
                 ));
             }
-            RangeEnd::Line(end_num)
-        };
+        }
 
-        Ok(Addr::Range(start, end))
-    } else if addr_str == "$" {
-        Ok(Addr::Last)
+        require_p_command(rest2)?;
+        Ok(Addr::Range(first, second))
     } else {
-        let n = parse_line_number(addr_str)?;
-        Ok(Addr::Line(n))
+        require_p_command(rest)?;
+        Ok(Addr::Single(first))
     }
+}
+
+fn require_p_command(rest: &str) -> Result<(), String> {
+    if rest == "p" {
+        return Ok(());
+    }
+    if rest.is_empty() {
+        return Err("missing command — use e.g. '10,20p' or '/pattern/p'".to_string());
+    }
+    let cmd = rest.chars().next().unwrap();
+    Err(format!(
+        "unsupported sed command '{}' — only 'p' (print) is allowed",
+        cmd
+    ))
 }
 
 fn parse_line_number(s: &str) -> Result<usize, String> {
@@ -97,21 +145,15 @@ fn parse_args(args: &[String]) -> Result<(Vec<Addr>, Vec<String>), String> {
             if i >= args.len() {
                 return Err("-e requires an expression".to_string());
             }
-            for part in args[i].split(';') {
-                let part = part.trim();
-                if !part.is_empty() {
-                    exprs.push(parse_expr(part)?);
-                }
+            for part in split_expressions(&args[i]) {
+                exprs.push(parse_expr(&part)?);
             }
         } else if arg.starts_with('-') {
             return Err(format!("unsupported sed flag '{}'", arg));
         } else if exprs.is_empty() {
             // First non-flag argument is the script (if no -e was used)
-            for part in arg.split(';') {
-                let part = part.trim();
-                if !part.is_empty() {
-                    exprs.push(parse_expr(part)?);
-                }
+            for part in split_expressions(arg) {
+                exprs.push(parse_expr(&part)?);
             }
         } else {
             files.push(arg.clone());
@@ -130,41 +172,73 @@ fn parse_args(args: &[String]) -> Result<(Vec<Addr>, Vec<String>), String> {
     Ok((exprs, files))
 }
 
-/// Check if a line number matches any expression.
-/// For `$p` and range-to-`$`, `is_last` indicates this is the final line.
-fn line_matches(exprs: &[Addr], line_num: usize, is_last: bool) -> bool {
-    exprs.iter().any(|addr| match addr {
-        Addr::Line(n) => line_num == *n,
-        Addr::Last => is_last,
-        Addr::Range(start, end) => {
-            let past_start = line_num >= *start;
-            let before_end = match end {
-                RangeEnd::Line(n) => line_num <= *n,
-                RangeEnd::Last => true,
-            };
-            past_start && before_end
+/// Split a sed script on `;`, respecting `/regex/` delimiters.
+/// e.g. `"/foo/p;10,20p"` → `["/foo/p", "10,20p"]`
+fn split_expressions(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_regex = false;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'\\' && i + 1 < bytes.len() {
+            current.push(c as char);
+            current.push(bytes[i + 1] as char);
+            i += 2;
+            continue;
         }
-    })
+        if c == b'/' {
+            in_regex = !in_regex;
+            current.push(c as char);
+        } else if c == b';' && !in_regex {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c as char);
+        }
+        i += 1;
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// Check if a line matches a single address spec.
+fn addr_spec_matches(spec: &AddrSpec, line: &str, line_num: usize, is_last: bool) -> bool {
+    match spec {
+        AddrSpec::Line(n) => line_num == *n,
+        AddrSpec::Last => is_last,
+        AddrSpec::Pattern(re) => re.is_match(line),
+    }
 }
 
 /// Returns true if any expression uses `$` (last-line addressing),
-/// which requires reading the entire file to know the line count.
-fn needs_last_line(exprs: &[Addr]) -> bool {
-    exprs.iter().any(|addr| matches!(addr, Addr::Last | Addr::Range(_, RangeEnd::Last)))
+/// which requires reading the entire input to know the line count.
+/// Regex patterns do NOT require full scan — they can stream.
+fn needs_full_scan(exprs: &[Addr]) -> bool {
+    exprs.iter().any(|addr| match addr {
+        Addr::Single(AddrSpec::Last) => true,
+        Addr::Range(AddrSpec::Last, _) | Addr::Range(_, AddrSpec::Last) => true,
+        _ => false,
+    })
 }
 
 /// Returns the maximum fixed line number referenced, for early exit optimization.
+/// Only returns Some when ALL expressions use pure line-number addressing.
 fn max_fixed_line(exprs: &[Addr]) -> Option<usize> {
     let mut max = None;
     for addr in exprs {
         match addr {
-            Addr::Line(n) => {
+            Addr::Single(AddrSpec::Line(n)) => {
                 max = Some(max.map_or(*n, |m: usize| m.max(*n)));
             }
-            Addr::Range(_, RangeEnd::Line(n)) => {
+            Addr::Range(_, AddrSpec::Line(n)) => {
                 max = Some(max.map_or(*n, |m: usize| m.max(*n)));
             }
-            _ => return None, // has $ addressing, can't early-exit
+            _ => return None,
         }
     }
     max
@@ -176,6 +250,15 @@ pub fn execute(args: &[String], working_dir: &Path, stdin_data: Option<&str>) ->
         Ok(v) => v,
         Err(e) => return (String::new(), format!("sed: {}\n", e), 1),
     };
+
+    // Validate file arguments for path safety (absolute paths, traversal).
+    // The executor skips its blanket check for builtins, so we do it here
+    // for file args only — expression args like `/pattern/p` are not paths.
+    for file in &files {
+        if let Err(e) = validator::check_arg_path_safety(file) {
+            return (String::new(), format!("sed: {}\n", e), 1);
+        }
+    }
 
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -223,21 +306,27 @@ pub fn execute(args: &[String], working_dir: &Path, stdin_data: Option<&str>) ->
 
 /// Process an iterator of lines against expressions, appending matches to stdout.
 fn process_lines<'a, I: Iterator<Item = &'a str>>(exprs: &[Addr], lines: I, stdout: &mut String) {
-    if needs_last_line(exprs) {
+    if needs_full_scan(exprs) {
         let all: Vec<&str> = lines.collect();
         let total = all.len();
+
+        // Track range state: for each range expression, whether we're inside it.
+        let mut range_active: Vec<bool> = exprs.iter().map(|_| false).collect();
+
         for (i, line) in all.iter().enumerate() {
             let line_num = i + 1;
-            if line_matches(exprs, line_num, line_num == total) {
+            let is_last = line_num == total;
+            if line_matches_any(exprs, &mut range_active, line, line_num, is_last) {
                 stdout.push_str(line);
                 stdout.push('\n');
             }
         }
     } else {
         let max_line = max_fixed_line(exprs);
+        let mut range_active: Vec<bool> = exprs.iter().map(|_| false).collect();
         for (i, line) in lines.enumerate() {
             let line_num = i + 1;
-            if line_matches(exprs, line_num, false) {
+            if line_matches_any(exprs, &mut range_active, line, line_num, false) {
                 stdout.push_str(line);
                 stdout.push('\n');
             }
@@ -250,6 +339,44 @@ fn process_lines<'a, I: Iterator<Item = &'a str>>(exprs: &[Addr], lines: I, stdo
     }
 }
 
+/// Check if a line matches any expression, tracking range state.
+fn line_matches_any(
+    exprs: &[Addr],
+    range_active: &mut [bool],
+    line: &str,
+    line_num: usize,
+    is_last: bool,
+) -> bool {
+    let mut matched = false;
+    for (idx, addr) in exprs.iter().enumerate() {
+        match addr {
+            Addr::Single(spec) => {
+                if addr_spec_matches(spec, line, line_num, is_last) {
+                    matched = true;
+                }
+            }
+            Addr::Range(start, end) => {
+                if range_active[idx] {
+                    // We're inside the range; check if this line ends it.
+                    matched = true;
+                    if addr_spec_matches(end, line, line_num, is_last) {
+                        range_active[idx] = false;
+                    }
+                } else if addr_spec_matches(start, line, line_num, is_last) {
+                    // Start of range.
+                    matched = true;
+                    range_active[idx] = true;
+                    // Check if end also matches this same line (single-line range).
+                    if addr_spec_matches(end, line, line_num, is_last) {
+                        range_active[idx] = false;
+                    }
+                }
+            }
+        }
+    }
+    matched
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,25 +384,55 @@ mod tests {
     #[test]
     fn test_parse_single_line() {
         let addr = parse_expr("5p").unwrap();
-        assert!(std::matches!(addr, Addr::Line(5)));
+        assert!(matches!(addr, Addr::Single(AddrSpec::Line(5))));
     }
 
     #[test]
     fn test_parse_last_line() {
         let addr = parse_expr("$p").unwrap();
-        assert!(std::matches!(addr, Addr::Last));
+        assert!(matches!(addr, Addr::Single(AddrSpec::Last)));
     }
 
     #[test]
     fn test_parse_range() {
         let addr = parse_expr("10,20p").unwrap();
-        assert!(std::matches!(addr, Addr::Range(10, RangeEnd::Line(20))));
+        assert!(matches!(addr, Addr::Range(AddrSpec::Line(10), AddrSpec::Line(20))));
     }
 
     #[test]
     fn test_parse_range_to_last() {
         let addr = parse_expr("5,$p").unwrap();
-        assert!(std::matches!(addr, Addr::Range(5, RangeEnd::Last)));
+        assert!(matches!(addr, Addr::Range(AddrSpec::Line(5), AddrSpec::Last)));
+    }
+
+    #[test]
+    fn test_parse_regex_single() {
+        let addr = parse_expr("/foo/p").unwrap();
+        assert!(matches!(addr, Addr::Single(AddrSpec::Pattern(_))));
+    }
+
+    #[test]
+    fn test_parse_regex_range() {
+        let addr = parse_expr("/start/,/end/p").unwrap();
+        assert!(matches!(addr, Addr::Range(AddrSpec::Pattern(_), AddrSpec::Pattern(_))));
+    }
+
+    #[test]
+    fn test_parse_mixed_line_regex_range() {
+        let addr = parse_expr("5,/end/p").unwrap();
+        assert!(matches!(addr, Addr::Range(AddrSpec::Line(5), AddrSpec::Pattern(_))));
+    }
+
+    #[test]
+    fn test_parse_mixed_regex_line_range() {
+        let addr = parse_expr("/start/,10p").unwrap();
+        assert!(matches!(addr, Addr::Range(AddrSpec::Pattern(_), AddrSpec::Line(10))));
+    }
+
+    #[test]
+    fn test_parse_regex_with_escaped_slash() {
+        let addr = parse_expr("/foo\\/bar/p").unwrap();
+        assert!(matches!(addr, Addr::Single(AddrSpec::Pattern(_))));
     }
 
     #[test]
@@ -291,15 +448,15 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_missing_address() {
-        let err = parse_expr("p").unwrap_err();
-        assert!(err.contains("missing address"));
+    fn test_parse_missing_command() {
+        let err = parse_expr("/pattern/").unwrap_err();
+        assert!(err.contains("missing command"));
     }
 
     #[test]
     fn test_parse_bad_line_number() {
         let err = parse_expr("abcp").unwrap_err();
-        assert!(err.contains("invalid line number"));
+        assert!(err.contains("expected address"));
     }
 
     #[test]
@@ -315,6 +472,18 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_unterminated_regex() {
+        let err = parse_expr("/unterminated").unwrap_err();
+        assert!(err.contains("unterminated regex"));
+    }
+
+    #[test]
+    fn test_parse_invalid_regex() {
+        let err = parse_expr("/[invalid/p").unwrap_err();
+        assert!(err.contains("invalid regex"));
+    }
+
+    #[test]
     fn test_parse_args_requires_n() {
         let args: Vec<String> = vec!["5p".into(), "file.txt".into()];
         let err = parse_args(&args).unwrap_err();
@@ -324,6 +493,14 @@ mod tests {
     #[test]
     fn test_parse_args_basic() {
         let args: Vec<String> = vec!["-n".into(), "5,10p".into(), "file.txt".into()];
+        let (exprs, files) = parse_args(&args).unwrap();
+        assert_eq!(exprs.len(), 1);
+        assert_eq!(files, vec!["file.txt"]);
+    }
+
+    #[test]
+    fn test_parse_args_regex() {
+        let args: Vec<String> = vec!["-n".into(), "/pattern/p".into(), "file.txt".into()];
         let (exprs, files) = parse_args(&args).unwrap();
         assert_eq!(exprs.len(), 1);
         assert_eq!(files, vec!["file.txt"]);
@@ -345,62 +522,86 @@ mod tests {
     }
 
     #[test]
-    fn test_line_matches_single() {
-        let addr = parse_expr("5p").unwrap();
-        assert!(!line_matches(&[addr], 4, false));
-        let addr = parse_expr("5p").unwrap();
-        assert!(line_matches(&[addr], 5, false));
-        let addr = parse_expr("5p").unwrap();
-        assert!(!line_matches(&[addr], 6, false));
-    }
-
-    #[test]
-    fn test_line_matches_range() {
-        let addr = parse_expr("3,5p").unwrap();
-        assert!(!line_matches(&[addr], 2, false));
-        let addr = parse_expr("3,5p").unwrap();
-        assert!(line_matches(&[addr], 3, false));
-        let addr = parse_expr("3,5p").unwrap();
-        assert!(line_matches(&[addr], 4, false));
-        let addr = parse_expr("3,5p").unwrap();
-        assert!(line_matches(&[addr], 5, false));
-        let addr = parse_expr("3,5p").unwrap();
-        assert!(!line_matches(&[addr], 6, false));
-    }
-
-    #[test]
-    fn test_line_matches_last() {
-        let addr = parse_expr("$p").unwrap();
-        assert!(!line_matches(&[addr], 5, false));
-        let addr = parse_expr("$p").unwrap();
-        assert!(line_matches(&[addr], 5, true));
+    fn test_parse_args_semicolons_with_regex() {
+        let args: Vec<String> = vec!["-n".into(), "/foo/p;10,20p".into(), "file.txt".into()];
+        let (exprs, _) = parse_args(&args).unwrap();
+        assert_eq!(exprs.len(), 2);
     }
 
     #[test]
     fn test_process_lines_basic() {
-        let addr = parse_expr("2,3p").unwrap();
+        let exprs = vec![parse_expr("2,3p").unwrap()];
         let input = "line1\nline2\nline3\nline4";
         let mut out = String::new();
-        process_lines(&[addr], input.lines(), &mut out);
+        process_lines(&exprs, input.lines(), &mut out);
         assert_eq!(out, "line2\nline3\n");
     }
 
     #[test]
     fn test_process_lines_last() {
-        let addr = parse_expr("$p").unwrap();
+        let exprs = vec![parse_expr("$p").unwrap()];
         let input = "line1\nline2\nline3";
         let mut out = String::new();
-        process_lines(&[addr], input.lines(), &mut out);
+        process_lines(&exprs, input.lines(), &mut out);
         assert_eq!(out, "line3\n");
     }
 
     #[test]
     fn test_process_lines_range_to_last() {
-        let addr = parse_expr("2,$p").unwrap();
+        let exprs = vec![parse_expr("2,$p").unwrap()];
         let input = "line1\nline2\nline3";
         let mut out = String::new();
-        process_lines(&[addr], input.lines(), &mut out);
+        process_lines(&exprs, input.lines(), &mut out);
         assert_eq!(out, "line2\nline3\n");
+    }
+
+    #[test]
+    fn test_process_lines_regex_single() {
+        let exprs = vec![parse_expr("/two/p").unwrap()];
+        let input = "one\ntwo\nthree\ntwo again";
+        let mut out = String::new();
+        process_lines(&exprs, input.lines(), &mut out);
+        assert_eq!(out, "two\ntwo again\n");
+    }
+
+    #[test]
+    fn test_process_lines_regex_range() {
+        let exprs = vec![parse_expr("/START/,/END/p").unwrap()];
+        let input = "before\nSTART here\nmiddle\nEND here\nafter";
+        let mut out = String::new();
+        process_lines(&exprs, input.lines(), &mut out);
+        assert_eq!(out, "START here\nmiddle\nEND here\n");
+    }
+
+    #[test]
+    fn test_process_lines_mixed_line_regex_range() {
+        let exprs = vec![parse_expr("2,/end/p").unwrap()];
+        let input = "one\ntwo\nthree\nend here\nfive";
+        let mut out = String::new();
+        process_lines(&exprs, input.lines(), &mut out);
+        assert_eq!(out, "two\nthree\nend here\n");
+    }
+
+    #[test]
+    fn test_process_lines_regex_line_range() {
+        let exprs = vec![parse_expr("/start/,3p").unwrap()];
+        let input = "one\nstart here\nthree\nfour";
+        let mut out = String::new();
+        process_lines(&exprs, input.lines(), &mut out);
+        assert_eq!(out, "start here\nthree\n");
+    }
+
+    #[test]
+    fn test_split_expressions_with_regex() {
+        let parts = split_expressions("/foo/p;10,20p");
+        assert_eq!(parts, vec!["/foo/p", "10,20p"]);
+    }
+
+    #[test]
+    fn test_split_expressions_regex_with_semicolon_inside() {
+        // A semicolon inside /regex;here/ should NOT split.
+        let parts = split_expressions("/foo;bar/p");
+        assert_eq!(parts, vec!["/foo;bar/p"]);
     }
 
     #[test]
@@ -408,5 +609,24 @@ mod tests {
         let args: Vec<String> = vec!["-n".into(), "-i".into(), "5p".into()];
         let err = parse_args(&args).unwrap_err();
         assert!(err.contains("unsupported sed flag"));
+    }
+
+    #[test]
+    fn test_file_path_safety_absolute() {
+        let args = &[
+            "-n".into(), "1p".into(), "/etc/passwd".into(),
+        ];
+        let (_, _, exit) = execute(args, Path::new("."), None);
+        assert_ne!(exit, 0);
+    }
+
+    #[test]
+    fn test_file_path_safety_traversal() {
+        let args = &[
+            "-n".into(), "1p".into(), "../secret".into(),
+        ];
+        let (_, stderr, exit) = execute(args, Path::new("."), None);
+        assert_ne!(exit, 0);
+        assert!(stderr.contains("path traversal"));
     }
 }

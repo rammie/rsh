@@ -2486,6 +2486,96 @@ fn test_sed_in_for_loop() {
     assert_eq!(lines.len(), 2);
 }
 
+// ---- Regex sed address tests ----
+
+#[test]
+fn test_sed_regex_pattern() {
+    // Match lines containing "name" in Cargo.toml
+    let out = rsh_bin()
+        .arg("sed -n '/name/p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("name"));
+    // Should not contain lines without "name"
+    for line in stdout.lines() {
+        assert!(line.contains("name"), "unexpected line: {}", line);
+    }
+}
+
+#[test]
+fn test_sed_regex_range() {
+    // Match from [package] to the next blank-ish line or [dependencies]
+    let out = rsh_bin()
+        .arg("sed -n '/\\[package\\]/,/\\[dependencies\\]/p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("[package]"));
+    assert!(stdout.contains("[dependencies]"));
+}
+
+#[test]
+fn test_sed_mixed_line_regex_range() {
+    // From line 1 to first line matching "edition"
+    let out = rsh_bin()
+        .arg("sed -n '1,/edition/p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("[package]"));
+    assert!(stdout.contains("edition"));
+}
+
+#[test]
+fn test_sed_regex_in_pipeline() {
+    let out = rsh_bin()
+        .arg("cat Cargo.toml | sed -n '/name/p'")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("name"));
+}
+
+#[test]
+fn test_sed_regex_with_semicolons() {
+    // Multiple expressions: regex + line number
+    let out = rsh_bin()
+        .arg("sed -n '/edition/p;1p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("[package]"));
+    assert!(stdout.contains("edition"));
+}
+
+#[test]
+fn test_sed_regex_no_match() {
+    let out = rsh_bin()
+        .arg("sed -n '/ZZZZNONEXISTENT/p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.is_empty());
+}
+
+#[test]
+fn test_sed_invalid_regex_rejected() {
+    let out = rsh_bin()
+        .arg("sed -n '/[invalid/p' Cargo.toml")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("invalid regex"), "stderr: {}", stderr);
+}
+
 // ---- ANSI-C quoting tests ----
 
 #[test]
