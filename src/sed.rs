@@ -4,7 +4,6 @@
 /// Supports line-number addresses (`sed -n '10,20p'`) and regex addresses
 /// (`sed -n '/pattern/p'`), including mixed ranges.
 use regex::Regex;
-use std::borrow::Cow;
 use std::io::BufRead;
 use std::path::Path;
 
@@ -25,7 +24,81 @@ enum Addr {
     Range(AddrSpec, AddrSpec),
 }
 
+/// Characters that swap between literal and metacharacter meaning in BRE vs ERE.
+const BRE_SWAP_CHARS: &[u8] = b"(){}|+?";
+
+/// Translate a BRE (Basic Regular Expression) pattern to ERE for Rust's regex crate.
+///
+/// BRE→ERE rules for the swap characters `( ) { } | + ?`:
+///   - `\X` in BRE (metacharacter) → `X` in ERE
+///   - `X` in BRE (literal) → `\X` in ERE
+/// Inside `[...]` character classes, everything is literal — no translation.
+/// Also unescapes `\/` → `/` (sed delimiter escape, not a BRE/ERE concept).
+fn bre_to_ere(bre: &str) -> String {
+    let bytes = bre.as_bytes();
+    // Over-allocate slightly: swap chars each add one byte (`\`) on the escape path.
+    let mut out = String::with_capacity(bre.len() + 8);
+    let mut i = 0;
+    let mut in_bracket = false;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        // Track character class brackets (no translation inside).
+        if !in_bracket && c == b'[' {
+            in_bracket = true;
+            out.push('[');
+            i += 1;
+            // Handle negation and literal ] at start: [^], []], [^]]
+            if i < bytes.len() && bytes[i] == b'^' {
+                out.push('^');
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b']' {
+                out.push(']');
+                i += 1;
+            }
+            continue;
+        }
+        if in_bracket && c == b']' {
+            in_bracket = false;
+            out.push(']');
+            i += 1;
+            continue;
+        }
+        if in_bracket {
+            out.push(c as char);
+            i += 1;
+            continue;
+        }
+
+        if c == b'\\' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'/' {
+                out.push('/');
+            } else if BRE_SWAP_CHARS.contains(&next) {
+                out.push(next as char);
+            } else {
+                out.push('\\');
+                out.push(next as char);
+            }
+            i += 2;
+        } else if BRE_SWAP_CHARS.contains(&c) {
+            // BRE bare literal → ERE escaped literal
+            out.push('\\');
+            out.push(c as char);
+            i += 1;
+        } else {
+            out.push(c as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Try to parse a `/regex/` at the start of `s`. Returns (Regex, rest_of_string).
+/// The pattern is interpreted as BRE (like GNU sed) and translated to ERE
+/// for the Rust regex engine.
 fn parse_regex_addr(s: &str) -> Result<(Regex, &str), String> {
     debug_assert!(s.starts_with('/'));
     let inner = &s[1..];
@@ -39,13 +112,8 @@ fn parse_regex_addr(s: &str) -> Result<(Regex, &str), String> {
         }
         if bytes[i] == b'/' {
             let pattern = &inner[..i];
-            let unescaped: Cow<str> = if pattern.contains("\\/") {
-                pattern.replace("\\/", "/").into()
-            } else {
-                pattern.into()
-            };
-            let re = Regex::new(&unescaped)
-                .map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
+            let ere = bre_to_ere(pattern);
+            let re = Regex::new(&ere).map_err(|e| format!("invalid regex '{}': {}", pattern, e))?;
             let rest = &inner[i + 1..];
             return Ok((re, rest));
         }
@@ -624,6 +692,93 @@ mod tests {
         // A semicolon inside /regex;here/ should NOT split.
         let parts = split_expressions("/foo;bar/p");
         assert_eq!(parts, vec!["/foo;bar/p"]);
+    }
+
+    // --- BRE-to-ERE translation ---
+
+    #[test]
+    fn test_bre_to_ere_no_change() {
+        assert_eq!(bre_to_ere("hello"), "hello");
+        assert_eq!(bre_to_ere("foo.*bar"), "foo.*bar");
+        assert_eq!(bre_to_ere("^start$"), "^start$");
+    }
+
+    #[test]
+    fn test_bre_to_ere_literal_parens() {
+        // BRE: bare parens are literal → ERE: must be escaped
+        assert_eq!(bre_to_ere("function()"), r"function\(\)");
+    }
+
+    #[test]
+    fn test_bre_to_ere_group_parens() {
+        // BRE: \( \) are group metacharacters → ERE: bare ( )
+        assert_eq!(bre_to_ere(r"\(group\)"), "(group)");
+    }
+
+    #[test]
+    fn test_bre_to_ere_braces() {
+        // BRE: \{3\} is repetition → ERE: {3}
+        assert_eq!(bre_to_ere(r"a\{3\}"), "a{3}");
+        // BRE: bare { is literal → ERE: \{
+        assert_eq!(bre_to_ere("a{3}"), r"a\{3\}");
+    }
+
+    #[test]
+    fn test_bre_to_ere_alternation() {
+        // GNU BRE: \| is alternation → ERE: |
+        assert_eq!(bre_to_ere(r"foo\|bar"), "foo|bar");
+        // BRE: bare | is literal → ERE: \|
+        assert_eq!(bre_to_ere("foo|bar"), r"foo\|bar");
+    }
+
+    #[test]
+    fn test_bre_to_ere_plus_question() {
+        // GNU BRE: \+ and \? are quantifiers → ERE: + and ?
+        assert_eq!(bre_to_ere(r"a\+"), "a+");
+        assert_eq!(bre_to_ere(r"a\?"), "a?");
+        // BRE: bare + and ? are literal → ERE: \+ and \?
+        assert_eq!(bre_to_ere("a+b?"), r"a\+b\?");
+    }
+
+    #[test]
+    fn test_bre_to_ere_bracket_class_untouched() {
+        // Inside [...], everything is literal — no translation
+        assert_eq!(bre_to_ere("[()]"), "[()]");
+        assert_eq!(bre_to_ere("[^()+?]"), "[^()+?]");
+        // ] at start of class is literal
+        assert_eq!(bre_to_ere("[]()]"), "[]()]");
+    }
+
+    #[test]
+    fn test_bre_to_ere_escaped_slash() {
+        assert_eq!(bre_to_ere(r"foo\/bar"), "foo/bar");
+    }
+
+    #[test]
+    fn test_bre_to_ere_other_escapes_unchanged() {
+        assert_eq!(bre_to_ere(r"\d\w\s"), r"\d\w\s");
+        assert_eq!(bre_to_ere(r"\."), r"\.");
+    }
+
+    #[test]
+    fn test_bre_parens_literal_in_match() {
+        // "function()" in BRE should match literal parens
+        let exprs = vec![parse_expr("/function()/p").unwrap()];
+        let input = "void function() {}\nint x = 5;\nfunction() called";
+        let mut out = String::new();
+        process_lines(&exprs, input.lines(), &mut out);
+        assert_eq!(out, "void function() {}\nfunction() called\n");
+    }
+
+    #[test]
+    fn test_bre_close_paren_not_error() {
+        // A bare ) in BRE is literal — should NOT cause "unopened group" error
+        let result = parse_expr("/^);/p");
+        assert!(
+            result.is_ok(),
+            "bare ) should be literal in BRE: {:?}",
+            result
+        );
     }
 
     #[test]
