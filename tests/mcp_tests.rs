@@ -249,45 +249,13 @@ fn test_mcp_notification_ignored() {
     assert_eq!(responses[0]["id"], 1);
 }
 
-// --- Install tests ---
+// --- Install tests (unique to mcp_tests; see executor_tests for create/idempotent/preserve/subdir) ---
 
 #[test]
-fn test_install_claude_creates_mcp_json_and_hook() {
-    let tmpdir = std::env::temp_dir().join(format!("rsh_test_{}", std::process::id()));
-    std::fs::create_dir_all(tmpdir.join(".git")).unwrap();
-
-    let output = rsh_bin()
-        .args(["--install", "claude", "--dir"])
-        .arg(&tmpdir)
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
-
-    // Verify .mcp.json
-    let content = std::fs::read_to_string(tmpdir.join(".mcp.json")).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&content).unwrap();
-    assert_eq!(config["mcpServers"]["rsh"]["command"], "rsh");
-    let args = config["mcpServers"]["rsh"]["args"].as_array().unwrap();
-    assert!(args.iter().any(|a| a == "--mcp"));
-
-    // Verify SessionStart hook
-    let settings_path = tmpdir.join(".claude/settings.local.json");
-    assert!(settings_path.exists());
-    let settings_content = std::fs::read_to_string(&settings_path).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(&settings_content).unwrap();
-    let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(arr.len(), 1);
-    assert_eq!(arr[0]["hooks"][0]["command"], "rsh --prime");
-
-    std::fs::remove_dir_all(&tmpdir).unwrap();
-}
-
-#[test]
-fn test_install_claude_merges_existing() {
+fn test_install_claude_merges_existing_mcp_servers() {
     let tmpdir = std::env::temp_dir().join(format!("rsh_test_merge_{}", std::process::id()));
     std::fs::create_dir_all(tmpdir.join(".git")).unwrap();
 
-    // Write existing .mcp.json with another server
     let existing = serde_json::json!({
         "mcpServers": {
             "other-tool": { "command": "other", "args": ["--serve"] }
@@ -308,37 +276,8 @@ fn test_install_claude_merges_existing() {
 
     let content = std::fs::read_to_string(tmpdir.join(".mcp.json")).unwrap();
     let config: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-    // Both servers should be present
     assert_eq!(config["mcpServers"]["other-tool"]["command"], "other");
     assert_eq!(config["mcpServers"]["rsh"]["command"], "rsh");
-
-    std::fs::remove_dir_all(&tmpdir).unwrap();
-}
-
-#[test]
-fn test_install_claude_idempotent() {
-    let tmpdir = std::env::temp_dir().join(format!("rsh_test_idemp_{}", std::process::id()));
-    std::fs::create_dir_all(tmpdir.join(".git")).unwrap();
-
-    for _ in 0..2 {
-        let output = rsh_bin()
-            .args(["--install", "claude", "--dir"])
-            .arg(&tmpdir)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-    }
-
-    let content = std::fs::read_to_string(tmpdir.join(".mcp.json")).unwrap();
-    let config: serde_json::Value = serde_json::from_str(&content).unwrap();
-    let servers = config["mcpServers"].as_object().unwrap();
-    assert_eq!(servers.len(), 1, "should have exactly one MCP server entry");
-
-    let settings_content = std::fs::read_to_string(tmpdir.join(".claude/settings.local.json")).unwrap();
-    let settings: serde_json::Value = serde_json::from_str(&settings_content).unwrap();
-    let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(arr.len(), 1, "hook should not be duplicated");
 
     std::fs::remove_dir_all(&tmpdir).unwrap();
 }

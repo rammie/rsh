@@ -85,7 +85,7 @@ fn install_session_hook(project_root: &std::path::Path) {
         std::process::exit(1);
     };
 
-    // Check for existing rsh hook (dedup) — matches both old `rsh --prime` and new `rsh --prime` hooks
+    // Dedup: don't add a second hook if one already exists
     let already_exists = arr.iter().any(|entry| {
         entry.get("hooks").and_then(|h| h.as_array()).is_some_and(|hooks_arr| {
             hooks_arr.iter().any(|hook| {
