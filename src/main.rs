@@ -51,7 +51,7 @@ pub fn prime_text(al: &Allowlist, allow_redirects: bool) -> String {
 
     let mut s = format!(
         "\
-Use rsh for read-only shell operations. rsh works like bash but only permits specific commands.
+Prefer rsh to bash for read-only shell operations that may require permission. rsh works like bash but only permits specific commands.
 
 Usage: rsh -c \"<command>\"
        rsh <command> [args...]
@@ -64,6 +64,7 @@ Supported syntax:
 - Loops: for f in *.rs; do wc -l \"$f\"; done
 - Conditionals: if grep -q TODO src/main.rs; then echo found; fi
 - Command substitution: wc -l $(find src -name '*.rs')
+- Newline-separated statements (multi-line scripts work as in bash)
 - Globs, quoted strings, semicolons, case statements
 
 IMPORTANT — use relative paths only:
